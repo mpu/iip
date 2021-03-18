@@ -190,10 +190,7 @@ Section stack.
     | nil => ⌜rep = None⌝
     | v::l => ∃ (ℓ : loc) (rep' : option loc),
                 ⌜rep = Some ℓ⌝ ∗
-                (* ↦□ is a persistent readonly version of ↦;
-                   having this permission does not allow mutating
-                   the location *)
-                ℓ ↦□ (v, stack_elem_to_val rep') ∗
+                ℓ ↦ (v, stack_elem_to_val rep') ∗
                 list_inv l rep'
     end%I. (* %I is here to put the whole expression in the correct Coq
               notation namespace; namely the one of Iris propositions *)
@@ -371,11 +368,20 @@ Section stack.
        conjunction with three elements and strip some ▷ modalities
        (when possible) using ">".
 
-       I initially used an "Hclose" as last parameter, but we end
-       up blocked later if we do so. We need to use this more
-       primitive version instead to be able to chain the atomic
-       update AU. I would like to understand better what is going
-       on here. *)
+       Unlike for the load above we will not use "Hclose" as
+       last parameter here. That makes the proof slightly easier
+       as it plays better with the atomic update AU.
+
+       It is nonetheless possible to use "Hclose". The proof has
+       to be adapted by splitting the fancy update |={∅,⊤}=> that
+       will appear later using transitivity into
+       |={∅,⊤∖↑stackN}=> |={⊤∖↑stackN,⊤}=> and eliminating
+       the first one using the closing hypothesis given by the
+       atomic triple and the second one using Hclose. A comment
+       is inserted below to mark the point where transitivity
+       would have to be used. If you really want to understand
+       what is going on, be sure to edit the proof and use
+       "Hclose". *)
     iInv stackN as (stack_rep' l) "(>H● & >H↦ & Hl)".
     (* Note that we may, a priori, get a different stack_rep and a
        different l from the one we got in the first load. That is
@@ -441,11 +447,8 @@ Section stack.
       iMod ("AU") as (l') "[H◯ [_ Hredpill]]".
       (* The goal now is to re-establish the invariant;
          for that we need to show 'list_inv (v :: l) ?'.
-         
-         Let us begin by turning our ↦ into a persistent
-         readonly ↦□ *)
-      iMod (mapsto_persist with "Hhead_new") as "#Hhead_new".
-      (* Then we use the fact that we have both ● Excl' l and
+
+         First, we use the fact that we have both ● Excl' l and
          ◯ Excl' l' to infer that l = l'. The fancy intro pattern
          goes from ✓ (● Excl' l) (◯ Excl' l') to l' = l; and
          uses this equality to rewrite the goal. *)
@@ -462,14 +465,14 @@ Section stack.
       }
       (* We'll now use the red pill and, to do so, restore the
          stack invariant with the updated list. *)
+      (* If you used Hclose when opening the invariant, now is
+         the time to use transitivity of the fancy update
+         with iApply fupd_trans. *)
       iMod ("Hredpill" with "H◯") as "HΦ".
       iModIntro. (* c.f. my remarks about modalities *)
       iSplitR "HΦ".
-      { iModIntro. iExists (Some head_new), (v :: l).
-        iFrame. simpl.
-        (* eauto can go look in the context and instantiate existentials.
-           Its job is rather easy here. *)
-        eauto. }
+      { iNext. iExists (Some head_new), (v :: l).
+        iFrame.  iExists _,_. iFrame. done. }
       (* We're now almost done; concluding is merely a matter of
          using HΦ *)
       wp_pures. by iApply "HΦ".
@@ -479,9 +482,9 @@ Section stack.
       (* We will not use AU directly in the branch because we don't
          need to update the stack invariant. So concluding will be
          a mere matter of applying the Löb induction hypothesis. *)
-      iModIntro. iSplitR "AU".
+      iSplitR "AU".
       { iModIntro. iExists _, _. iFrame. }
-      wp_pures. by iApply ("IH" with "AU").
+      iModIntro. wp_pures. by iApply ("IH" with "AU").
   Qed.
 
 End stack.
