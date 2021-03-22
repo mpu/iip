@@ -502,78 +502,157 @@ Section examples.
       push s #0 ;; push s #1
     {{{ RET #(); stack_content γs [ #1; #0 ] }}}.
   Proof.
-    iIntros (Φ) "[#His Hs] HΦ".
+    (* We move is_stack into the persistent context to be
+       able to use it twice in sequence. *)
+    iIntros (Φ) "[#His Hsc] HΦ".
+    (* Instead of using wp_apply as we do for regular
+       triples we use the awp_apply tactic to use the atomic
+       triple. After doing so we end up with a single AACC
+       (atomic accessor) proof obligation. *)
     awp_apply (push_spec with "His").
-    iAaccIntro with "Hs"; first by eauto with iFrame.
-    iIntros "Hs". iModIntro. wp_seq.
+    (* To prove AACC << pre >> mask << pst >> we can use the dedicated
+       iAaccIntro tactic. In iris/bi/lib/atomic.v it is also suggested
+       that [rewrite /atomic_acc /=] can be used, it might be a good
+       exercise to go down this alternative route.
+
+       The iAaccIntro is handy when the precondition of the atomic
+       triple is at hand, we can then use iAaccIntro with "Hpre".
+       After iAaccIntro, we're required to prove two view shifts:
+       one used when the atomic update internally "aborts" (e.g., a
+       CAS fails), and one when the update succeeds. *)
+    iAaccIntro with "Hsc".
+    (* The "abort" view shift is easily proved. *)
+    { by eauto with iFrame. }
+    (* The success outcome gives us what we need to continue proving
+       the sequence of pushed. *)
+    iIntros "Hsc". iModIntro. wp_seq.
+    (* For some reason I do not understand yet, we have to add the
+       without "HΦ" clause, or else we get an error saying "not
+       all spatial assumptions are laterable". *)
     awp_apply (push_spec with "His") without "HΦ".
-    iAaccIntro with "Hs"; first by eauto with iFrame.
-    iIntros "Hs". iModIntro. iIntros "HΦ".
+    (* The rest of the proof merely replicates what we've done
+       earlier. *)
+    iAaccIntro with "Hsc"; first by eauto with iFrame.
+    iIntros "Hsc". iModIntro. iIntros "HΦ".
     iApply "HΦ". iAssumption.
   Qed.
+
+
+  (* Let us now move to a use of our stack in a concurrent context.
+     We will simply consider two pushes in parallel to begin with.
+     The proof structure will follow rather closely the example 04
+     (parallel add) from the POPL 2021 tutorial. *)
 
   (* Like in the parallel add example in the POPL 2021 tutorial
      we will need a local invariant.
 
      We use ●E (and ◯E) as succinct notations for ● Excl'
-     (and ◯ Excl'). *)
+     (and ◯ Excl').
+
+     The invariant says that there are two lists l1 and l2 such
+     that the contents of the stack is l1 ++ l2 up to permutation.
+     Initially l1 and l2 will be [] and, at the end of the parallel
+     push, they will be [0] and [1], respectively. *)
   Definition push_par_inv (γs γ1 γ2 : gname) : iProp Σ :=
-    (∃ l l1 l2, ⌜ l ≡ₚ (l1 ++ l2) ⌝ ∗  stack_content γs l ∗
+    (∃ l l1 l2, ⌜ l ≡ₚ l1 ++ l2 ⌝ ∗  stack_content γs l ∗
        own γ1 (●E l1) ∗ own γ2 (●E l2))%I.
 
-  (* This almost worked as is! However, it proved impossible to
-     open extract stack_content from the invariant when the
-     parallel push ended. Indeed, invariants live forever, so
-     once stack_content is moved in, it has to stay there
-     forever.
+  (* The two pushes can happen in any order, depending on what the
+     scheduler does, so we can only prove that the stack contents
+     will be the list [1; 0] up to permutation. We use std++'s ≡ₚ
+     relation to that end.
 
-     The fix here, is to use a cancellable invariant. *)
-
+     See:
+       https://plv.mpi-sws.org/coqdoc/stdpp/stdpp.list.html *)
   Lemma example_push_par γs s :
     {{{ is_stack (N.@"stack") γs s ∗ stack_content γs [] }}}
       ((push s #0) ||| (push s #1)) ;; #()
     {{{ RET #(); ∃ l, ⌜ l ≡ₚ [ #1; #0 ] ⌝ ∗ stack_content γs l }}}.
   Proof.
+    (* Again we move is_stack into the permanent context to use it
+       in both branches of the parallel composition statement. *)
     iIntros (Φ) "[#His Hsc] HΦ".
+
+    (* We now allocate two pieces of ghost state for l1 and l2.
+       It so happens that the ghost state we need here is precisely
+       the same as the one in stackG, so we don't need to add anything
+       in the Section's Context to have access to it. *)
     iMod (own_alloc (●E[] ⋅ ◯E[])) as (γ1) "[Hγ1● Hγ1◯]";
       first by apply auth_both_valid_discrete.
     iMod (own_alloc (●E[] ⋅ ◯E[])) as (γ2) "[Hγ2● Hγ2◯]";
       first by apply auth_both_valid_discrete.
+    (* Here, we depart from the parallel add exercise of the tutorial,
+       we use "cinv_alloc" instead of "inv_alloc" to allocate a
+       so-called cancellable invariant.
+
+       Cancellable invariants give the user a fractional token; when
+       this token is owned in full, it can be used to "cancel" the
+       invariant, and recover its contents (for the last time).
+       This is critical to be able to recover 'stack_content γs l'
+       after the ||| expression terminates. *)
     iMod (cinv_alloc _ (N.@"client") (push_par_inv γs γ1 γ2)
           with "[Hsc Hγ1● Hγ2●]")
       as (γi) "[#Hinv [Ho1 Ho2]]".
-    { iNext. iExists _,_,_. by iFrame. }
+    { iExists _,_,_. by iFrame. }
+
+    (* We can now verify the ||| expression; for each branch, we
+       have to specify the postcondition. In this case, we want
+       that after branch 1 is done the ghost list l1 is [0] and
+       the ghost list l2 is [1]. We also want to get back the
+       fractions of the cancelation token to be able to cancel
+       the invariant. *)
     wp_smart_apply
       (wp_par (λ _, own γ1 (◯E[ #0 ]) ∗ cinv_own γi (1/2))%I
               (λ _, own γ2 (◯E[ #1 ]) ∗ cinv_own γi (1/2))%I
        with "[Hγ1◯ Ho1] [Hγ2◯ Ho2]").
 
+    (* We begin with the first push s #0 expression. Like in the
+       sequential example, we use awp_apply push_spec. *)
     - awp_apply (push_spec with "His").
+      (* The second thing we need to do is to open our invariant
+         Hinv "over" the atomic access. This is where the magic
+         of logical atomicity comes into play! Even though push
+         is not physically atomic, the logic lets us open our
+         local invariant. *)
       iInv "Hinv" as "[>Hppi Ho1]".
       iDestruct "Hppi" as (l l1 l2) "(% & Hsc & Hγ1● & Hγ2●)".
+      (* We now have both pieces of the ghost state for l1 so
+         we know it is the empty list. *)
       iDestruct (own_valid_2 with "Hγ1● Hγ1◯") as %->%excl_auth_agree_L.
+      (* Like in the sequential case, we use iAaccIntro to turn
+         the AACC << >> << >> goal into two view shifts. Except,
+         this time, there is a tiny bit more work to prove them. *)
       iAaccIntro with "Hsc".
-      + iIntros "Hsc". iFrame.
-        iModIntro. iNext. iExists _,_,_. by iFrame.
-      + iMod (own_update_2 _ _ _ (●E[ #0 ] ⋅ ◯E[ #0 ]) with "Hγ1● Hγ1◯")
-          as "[Hγ1● Hγ1◯]"; first by apply excl_auth_update.
+      + (* In the abort case, we have to restore push_par_inv
+           invariant as well as the hypotheses we had in our
+           linear context right before the call. *)
         iIntros "Hsc". iFrame.
-        iModIntro. iNext. iExists _,_,_. iFrame.
-        by rewrite H.
+        iExists _,_,_. by iFrame.
+      + (* In case of a success, we need to update l1 from []
+           to [0]. That is done with the usual own_update_2
+           lemma. *)
+        iMod (own_update_2 _ _ _ (●E[ #0 ] ⋅ ◯E[ #0 ]) with "Hγ1● Hγ1◯")
+          as "[Hγ1● Hγ1◯]"; first by apply excl_auth_update.
+        (* Then we can prove that 1/ the postcondition of the
+           current ||| branch holds, and 2/ the push_par_inv
+           invariant is restored. *)
+        iIntros "Hsc". iFrame.
+        iExists _,_,_. iFrame. by rewrite H.
 
     (* The following block is identical to the previous one
-       with minor changes to some indices. *)
+       with only minor changes to some indices and #1 where
+       #0 was. *)
     - awp_apply (push_spec with "His").
       iInv "Hinv" as "[>Hppi Ho1]".
       iDestruct "Hppi" as (l l1 l2) "(% & Hsc & Hγ1● & Hγ2●)".
       iDestruct (own_valid_2 with "Hγ2● Hγ2◯") as %->%excl_auth_agree_L.
       iAaccIntro with "Hsc".
       + iIntros "Hsc". iFrame.
-        iModIntro. iNext. iExists _,_,_. by iFrame.
+        iExists _,_,_. by iFrame.
       + iMod (own_update_2 _ _ _ (●E[ #1 ] ⋅ ◯E[ #1 ]) with "Hγ2● Hγ2◯")
           as "[Hγ2● Hγ2◯]"; first by apply excl_auth_update.
         iIntros "Hsc". iFrame.
-        iModIntro. iNext. iExists _,_,_. iFrame.
+        iExists _,_,_. iFrame.
         by rewrite H (right_id [] (++)) (comm (++)).
 
     (* Finally, we need to merge the two branches and prove
@@ -582,9 +661,14 @@ Section examples.
       iNext. wp_seq.
       (* We have full ownership of the cancellable invariant, so
          we can cancel it and extract stack_content predicate out
-         of it. *)
+         of it. Note: It as a bit finicky to find when this iMod
+         has to happen. I would like to have a clearer understanding
+         of the conditions under which an iMod can be applied. *)
       iMod (cinv_cancel with "Hinv [Ho1 Ho2]") as ">Hppi";
         [done|by iApply (fractional_half_2 with "Ho1 Ho2")|].
+      (* After we retrieved the contents of push_par_inv, it is
+         fairly straightforward to prove the postcondition and
+         finish the poof. *)
       iDestruct "Hppi" as (l l1 l2) "(% & Hsc & Hγ1● & Hγ2●)".
       iDestruct (own_valid_2 with "Hγ1● Hγ1◯") as %->%excl_auth_agree_L.
       iDestruct (own_valid_2 with "Hγ2● Hγ2◯") as %->%excl_auth_agree_L.
