@@ -1,8 +1,9 @@
-From iris.algebra Require Import excl auth list.    (* stuff for ghost state *)
-From iris.base_logic.lib Require Import invariants.
+From iris.algebra Require Import excl_auth excl auth list.    (* stuff for ghost state *)
+From iris.base_logic.lib Require Import invariants cancelable_invariants.
+From iris.bi.lib Require Import fractional.
 From iris.program_logic Require Import atomic.      (* atomic triples/update *)
 From iris.proofmode Require Import tactics.
-From iris.heap_lang Require Import proofmode notation. (* atomic_heap *)
+From iris.heap_lang Require Import lib.par proofmode notation. (* atomic_heap *)
 
 (* Useful reading:
    - https://github.com/tchajed/coq-tricks
@@ -50,11 +51,10 @@ From iris.heap_lang Require Import proofmode notation. (* atomic_heap *)
    simplify our development using 'excl_authR (list0 val0)'
    directly.
  *)
-Class stackG Σ := StackG {
+Class stackG Σ :=
   (* The :> syntax means that when an instance of stackG Σ can
      automatically be seen as an instance of inG Σ (authR ...) *)
-  stack_stateG :> inG Σ (authR (optionUR (exclR (listO valO))));
-}.
+  stack_stateG :> inG Σ (authR (optionUR (exclR (listO valO)))).
 
 (* Alternative definition (because there is a single field): *)
 (* Class stackG Σ := StackG :> inG Σ (authR (optionUR (exclR (listO valO)))). *)
@@ -88,10 +88,9 @@ Section stack.
        https://coq.inria.fr/refman/language/extensions/implicit-arguments.html#implicit-generalization
        https://softwarefoundations.cis.upenn.edu/draft/qc-current/Typeclasses.html#lab21
    *)
-  Context `{!heapG Σ, !stackG Σ} (* {aheap: atomic_heap Σ} *) (N : namespace).
+  Context `{!heapG Σ, !stackG Σ} (N : namespace).
   Notation iProp := (iProp Σ).
 
-  (* Import atomic_heap.notation. *)
 
   (* Heaplang syntax is relatively nice and self-explanatory,
      for a change! *)
@@ -195,13 +194,9 @@ Section stack.
     end%I. (* %I is here to put the whole expression in the correct Coq
               notation namespace; namely the one of Iris propositions *)
 
-  (* Local Hint Extern 0 (environments.envs_entails _ (list_inv (_::_) _)) => simpl : core. *)
-
   Definition stack_inv (γs : gname) (head : loc) : iProp :=
     (∃ stack_rep l, own γs (● Excl' l) ∗
        head ↦ stack_elem_to_val stack_rep ∗ list_inv l stack_rep)%I.
-
-  (* Local Hint Extern 0 (environments.envs_entails _ (stack_inv _ _ _)) => unfold stack_inv : core. *)
 
   (* Name for our local invariant; names are necessary in Iris
      to avoid allowing opening the same invariant in a nested
@@ -488,3 +483,113 @@ Section stack.
   Qed.
 
 End stack.
+
+(* In the following section we use the atomic triple for push to
+   prove regular triples on programs that make sequential and
+   concurrent access to the stack data structure. *)
+Section examples.
+  (* We need a bunch of ghost state, heapG is the base,
+     spawnG is required to use the par contruct ( ||| ) in
+     heaplang, stackG is required for our stack ADT,
+     and finally, cinvG is added to support so-called
+     cancellable invariants (more on this later). *)
+  Context `{!heapG Σ, !spawnG Σ, !stackG Σ, !cinvG Σ} (N : namespace).
+
+  (* The atomic spec is usable to prove regular triples
+     about the push operation. *)
+  Lemma example_push_twice_seq γs s :
+    {{{ is_stack N γs s ∗ stack_content γs [] }}}
+      push s #0 ;; push s #1
+    {{{ RET #(); stack_content γs [ #1; #0 ] }}}.
+  Proof.
+    iIntros (Φ) "[#His Hs] HΦ".
+    awp_apply (push_spec with "His").
+    iAaccIntro with "Hs"; first by eauto with iFrame.
+    iIntros "Hs". iModIntro. wp_seq.
+    awp_apply (push_spec with "His") without "HΦ".
+    iAaccIntro with "Hs"; first by eauto with iFrame.
+    iIntros "Hs". iModIntro. iIntros "HΦ".
+    iApply "HΦ". iAssumption.
+  Qed.
+
+  (* Like in the parallel add example in the POPL 2021 tutorial
+     we will need a local invariant.
+
+     We use ●E (and ◯E) as succinct notations for ● Excl'
+     (and ◯ Excl'). *)
+  Definition push_par_inv (γs γ1 γ2 : gname) : iProp Σ :=
+    (∃ l l1 l2, ⌜ l ≡ₚ (l1 ++ l2) ⌝ ∗  stack_content γs l ∗
+       own γ1 (●E l1) ∗ own γ2 (●E l2))%I.
+
+  (* This almost worked as is! However, it proved impossible to
+     open extract stack_content from the invariant when the
+     parallel push ended. Indeed, invariants live forever, so
+     once stack_content is moved in, it has to stay there
+     forever.
+
+     The fix here, is to use a cancellable invariant. *)
+
+  Lemma example_push_par γs s :
+    {{{ is_stack (N.@"stack") γs s ∗ stack_content γs [] }}}
+      ((push s #0) ||| (push s #1)) ;; #()
+    {{{ RET #(); ∃ l, ⌜ l ≡ₚ [ #1; #0 ] ⌝ ∗ stack_content γs l }}}.
+  Proof.
+    iIntros (Φ) "[#His Hsc] HΦ".
+    iMod (own_alloc (●E[] ⋅ ◯E[])) as (γ1) "[Hγ1● Hγ1◯]";
+      first by apply auth_both_valid_discrete.
+    iMod (own_alloc (●E[] ⋅ ◯E[])) as (γ2) "[Hγ2● Hγ2◯]";
+      first by apply auth_both_valid_discrete.
+    iMod (cinv_alloc _ (N.@"client") (push_par_inv γs γ1 γ2)
+          with "[Hsc Hγ1● Hγ2●]")
+      as (γi) "[#Hinv [Ho1 Ho2]]".
+    { iNext. iExists _,_,_. by iFrame. }
+    wp_smart_apply
+      (wp_par (λ _, own γ1 (◯E[ #0 ]) ∗ cinv_own γi (1/2))%I
+              (λ _, own γ2 (◯E[ #1 ]) ∗ cinv_own γi (1/2))%I
+       with "[Hγ1◯ Ho1] [Hγ2◯ Ho2]").
+
+    - awp_apply (push_spec with "His").
+      iInv "Hinv" as "[>Hppi Ho1]".
+      iDestruct "Hppi" as (l l1 l2) "(% & Hsc & Hγ1● & Hγ2●)".
+      iDestruct (own_valid_2 with "Hγ1● Hγ1◯") as %->%excl_auth_agree_L.
+      iAaccIntro with "Hsc".
+      + iIntros "Hsc". iFrame.
+        iModIntro. iNext. iExists _,_,_. by iFrame.
+      + iMod (own_update_2 _ _ _ (●E[ #0 ] ⋅ ◯E[ #0 ]) with "Hγ1● Hγ1◯")
+          as "[Hγ1● Hγ1◯]"; first by apply excl_auth_update.
+        iIntros "Hsc". iFrame.
+        iModIntro. iNext. iExists _,_,_. iFrame.
+        by rewrite H.
+
+    (* The following block is identical to the previous one
+       with minor changes to some indices. *)
+    - awp_apply (push_spec with "His").
+      iInv "Hinv" as "[>Hppi Ho1]".
+      iDestruct "Hppi" as (l l1 l2) "(% & Hsc & Hγ1● & Hγ2●)".
+      iDestruct (own_valid_2 with "Hγ2● Hγ2◯") as %->%excl_auth_agree_L.
+      iAaccIntro with "Hsc".
+      + iIntros "Hsc". iFrame.
+        iModIntro. iNext. iExists _,_,_. by iFrame.
+      + iMod (own_update_2 _ _ _ (●E[ #1 ] ⋅ ◯E[ #1 ]) with "Hγ2● Hγ2◯")
+          as "[Hγ2● Hγ2◯]"; first by apply excl_auth_update.
+        iIntros "Hsc". iFrame.
+        iModIntro. iNext. iExists _,_,_. iFrame.
+        by rewrite H (right_id [] (++)) (comm (++)).
+
+    (* Finally, we need to merge the two branches and prove
+       the postcondition. *)
+    - iIntros (? ?) "[[Hγ1◯ Ho1] [Hγ2◯ Ho2]]".
+      iNext. wp_seq.
+      (* We have full ownership of the cancellable invariant, so
+         we can cancel it and extract stack_content predicate out
+         of it. *)
+      iMod (cinv_cancel with "Hinv [Ho1 Ho2]") as ">Hppi";
+        [done|by iApply (fractional_half_2 with "Ho1 Ho2")|].
+      iDestruct "Hppi" as (l l1 l2) "(% & Hsc & Hγ1● & Hγ2●)".
+      iDestruct (own_valid_2 with "Hγ1● Hγ1◯") as %->%excl_auth_agree_L.
+      iDestruct (own_valid_2 with "Hγ2● Hγ2◯") as %->%excl_auth_agree_L.
+      iModIntro. iApply ("HΦ" with "[Hsc]"). iExists l. iFrame.
+      by rewrite H (comm (++)).
+  Qed.
+
+End examples.
