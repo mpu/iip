@@ -9,16 +9,11 @@ Inductive value : Set :=
   | UnitV
   | LocV (ℓ : loc).
 
-(* values need an equivalence relation to be lifted to an ofe;
-   just use leibniz' equality *)
-Local Instance value_equiv : Equiv value := (=@{value}).
-
-Canonical Structure valueO : ofe := discreteO value.
 Canonical Structure tagO : ofe := discreteO tag.
 
 (* interpretation of types *)
 Definition sem_typeO (Σ : gFunctors) : ofe :=
-  valueO -n> laterO (iPropO Σ).
+  laterO (value -d> iPropO Σ).
 
 Class sem_heapG (Σ : gFunctors) : Set := SemHeapG {
   sem_heapG_inv :> inG Σ (gmap_viewR loc (prodO tagO (sem_typeO Σ)))
@@ -41,18 +36,28 @@ Eval hnf in interp.
 (* now, let's interpret some types *)
 
 Definition interp_unit : interp :=
-  λne (v : value), Next (⌜v = UnitV⌝)%I.
+  Next (λ (v : value), ⌜v = UnitV⌝%I).
 
 Definition interp_union (iA : interp) (iB : interp) : interp :=
-  λne (w : value), Next (later_car (iA w) ∨
-                         later_car (iB w))%I.
+  Next (λ (w : value), later_car iA w ∨ later_car iB w)%I.
 
 (* interpret a class type given the tag and the
    interpretation for the unique field type *)
 Definition interp_class (γ : gname) (t : tag) (iF : interp) : interp :=
-  λne (w : value), Next (
-    ∃ ℓ, ⌜w = LocV ℓ⌝ ∗ own γ (gmap_view_frag ℓ (DfracOwn 1) (t, iF))
+  Next (λ (w : value),
+    ∃ ℓ, ⌜w = LocV ℓ⌝ ∗ own γ (gmap_view_frag ℓ DfracDiscarded (t, iF))
   )%I.
+
+From iris.proofmode Require Import tactics.
+
+(* sanity check that the own assertion is persistent *)
+Lemma frag_test (γ : gname) (ℓ : loc) (t : tag) (iF : interp) :
+  own γ (gmap_view_frag ℓ DfracDiscarded (t, iF)) -∗
+  own γ (gmap_view_frag ℓ DfracDiscarded (t, iF)) ∗
+  own γ (gmap_view_frag ℓ DfracDiscarded (t, iF)).
+Proof.
+  iStartProof. iIntros "#Hown". by iSplitL.
+Qed.
 
 Fixpoint interp_type (γ : gname) (ty : langty) : interp :=
   match ty with
