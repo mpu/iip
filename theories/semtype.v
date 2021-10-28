@@ -12,11 +12,10 @@ Inductive value : Set :=
 Canonical Structure tagO : ofe := discreteO tag.
 
 (* interpretation of types *)
-Definition sem_typeO (Σ : gFunctors) : ofe :=
-  laterO (value -d> iPropO Σ).
+Definition sem_typeO (Σ : gFunctors) : ofe := value -d> iPropO Σ.
 
 Class sem_heapG (Σ : gFunctors) : Set := SemHeapG {
-  sem_heapG_inv :> inG Σ (gmap_viewR loc (prodO tagO (sem_typeO Σ)))
+  sem_heapG_inv :> inG Σ (gmap_viewR loc (prodO tagO (laterO (sem_typeO Σ))))
 }.
 
 Section proofs.
@@ -36,25 +35,25 @@ Eval hnf in interp.
 (* now, let's interpret some types *)
 
 Definition interp_unit : interp :=
-  Next (λ (v : value), ⌜v = UnitV⌝%I).
+  λ (v : value), ⌜v = UnitV⌝%I.
 
 Definition interp_union (iA : interp) (iB : interp) : interp :=
-  Next (λ (w : value), later_car iA w ∨ later_car iB w)%I.
+  λ (w : value), (iA w ∨ iB w)%I.
 
 (* interpret a class type given the tag and the
    interpretation for the unique field type *)
 Definition interp_class (γ : gname) (t : tag) (iF : interp) : interp :=
-  Next (λ (w : value),
-    ∃ ℓ, ⌜w = LocV ℓ⌝ ∗ own γ (gmap_view_frag ℓ DfracDiscarded (t, iF))
+  λ (w : value), (
+    ∃ ℓ, ⌜w = LocV ℓ⌝ ∗ own γ (gmap_view_frag ℓ DfracDiscarded (t, Next iF))
   )%I.
 
 From iris.proofmode Require Import tactics.
 
 (* sanity check that the own assertion is persistent *)
-Lemma frag_test (γ : gname) (ℓ : loc) (t : tag) (iF : interp) :
-  own γ (gmap_view_frag ℓ DfracDiscarded (t, iF)) -∗
-  own γ (gmap_view_frag ℓ DfracDiscarded (t, iF)) ∗
-  own γ (gmap_view_frag ℓ DfracDiscarded (t, iF)).
+Lemma frag_test (γ : gname) (ℓ : loc) x :
+  own γ (gmap_view_frag ℓ DfracDiscarded x) -∗
+  own γ (gmap_view_frag ℓ DfracDiscarded x) ∗
+  own γ (gmap_view_frag ℓ DfracDiscarded x).
 Proof.
   iStartProof. iIntros "#Hown". by iSplitL.
 Qed.
