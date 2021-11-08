@@ -86,12 +86,8 @@ Definition interp_type_pre (rec : ty_interpO) : ty_interpO :=
 Local Instance interp_type_pre_contractive :
   Contractive interp_type_pre.
 Proof.
-  move=>??? H. elim.
-  - done.
-  - move=>?????/=. rewrite /interp_union.
-    by f_equiv.
-  - move=>??/=. rewrite /interp_class.
-    by repeat first [f_contractive | f_equiv].
+  move=>??? H. elim=>*/=; solve_proper_core
+      ltac:(fun _ => first [done | f_contractive | f_equiv]).
 Qed.
 
 (* the interpretation of types can now be
