@@ -86,12 +86,12 @@ Definition pre_interp_type (rec : ty_interpO) : ty_interpO :=
 Local Instance pre_interp_type_contractive :
   Contractive pre_interp_type.
 Proof.
-  move=> n rx ry H. elim.
+  move=>????. elim.
   - done.
-  - move=>?????/=. rewrite /interp_union. by f_equiv.
+  - move=>?????/=. rewrite /interp_union.
+    by f_equiv.
   - move=>??/=. rewrite /interp_class.
-    repeat first [f_contractive | f_equiv].
-    by apply H.
+    by repeat first [f_contractive | f_equiv].
 Qed.
 
 (* the interpretation of types can now be
@@ -106,10 +106,8 @@ Lemma interp_type_unfold (ty : lang_ty) (v : value) :
   interp_type ty v ⊣⊢ pre_interp_type interp_type ty v.
 Proof.
   rewrite {1}/interp_type.
-  (* TROUBLE HERE *)
-  rewrite (fixpoint_unfold pre_interp_type).
+  apply (fixpoint_unfold pre_interp_type ty v).
 Qed.
-
 
 (* concrete heaps *)
 Definition heap : Type := gmap loc (tag * value).
@@ -149,8 +147,8 @@ Proof.
   iDestruct "Hlook" as %[[<- [= <- <-]]|[Hℓ Hlook]].
   - iExists _. rewrite lookup_insert.
     iSplitR; first done.
-    rewrite interp_type_unfold.
-    by rewrite /= /interp_unit.
+    rewrite interp_type_unfold /=.
+    by rewrite /interp_unit.
   - iDestruct ("Hm" with "[]") as (iF) "[% HiF]"; first done.
     iExists _. rewrite lookup_insert_ne; last done.
     by iSplitR.
