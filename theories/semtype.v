@@ -66,13 +66,13 @@ Notation ty_interpO := (lang_ty -d> interpO).
 Definition interp_class (t : tag) (rec : ty_interpO) : interp :=
   λ (w : value),
     (∃ ℓ fty, ⌜w = LocV ℓ ∧ Δ !! t = Some fty⌝ ∗
-       ▷ ∃ iF, iF ≡ rec fty ∗ sem_heap_mapsto ℓ t iF)%I.
+              sem_heap_mapsto ℓ t (rec fty))%I.
 
 (* we use a blend of Coq/Iris recursion, the
    Coq recursion lets us handle simple structural
    cases, and we use Iris' recursion to deal with
    the more complicated case of class types *)
-Definition pre_interp_type (rec : ty_interpO) : ty_interpO :=
+Definition interp_type_pre (rec : ty_interpO) : ty_interpO :=
   λ (ty : lang_ty),
     (fix go (ty : lang_ty) : interp :=
        match ty with
@@ -83,10 +83,10 @@ Definition pre_interp_type (rec : ty_interpO) : ty_interpO :=
 
 (* we cannot use solve_contractive out of the box
    because of the 'fix' combinator above *)
-Local Instance pre_interp_type_contractive :
-  Contractive pre_interp_type.
+Local Instance interp_type_pre_contractive :
+  Contractive interp_type_pre.
 Proof.
-  move=>????. elim.
+  move=>??? H. elim.
   - done.
   - move=>?????/=. rewrite /interp_union.
     by f_equiv.
@@ -97,16 +97,13 @@ Qed.
 (* the interpretation of types can now be
    defined as a fixpoint (because class types
    can be (mutually) recursive) *)
-Definition interp_type : ty_interpO :=
-  fixpoint pre_interp_type.
+Definition interp_type := fixpoint interp_type_pre.
 
-(* todo, inconvenient for class types; we
-   should rework the lemma in that case *)
 Lemma interp_type_unfold (ty : lang_ty) (v : value) :
-  interp_type ty v ⊣⊢ pre_interp_type interp_type ty v.
+  interp_type ty v ⊣⊢ interp_type_pre interp_type ty v.
 Proof.
   rewrite {1}/interp_type.
-  apply (fixpoint_unfold pre_interp_type ty v).
+  apply (fixpoint_unfold interp_type_pre ty v).
 Qed.
 
 (* concrete heaps *)
