@@ -9,6 +9,7 @@ Definition loc := positive.
 Inductive value : Set :=
   | UnitV
   | LocV (ℓ : loc).
+Canonical Structure valueO : ofe := leibnizO value.
 
 Local Instance value_inhabited : Inhabited value := populate UnitV.
 
@@ -21,18 +22,27 @@ Class sem_heapG (Σ : gFunctors) : Set := SemHeapG {
   sem_heapG_heap :> inG Σ (gmap_viewR loc (prodO tagO (laterO (sem_typeO Σ))));
 }.
 
+Inductive lang_ty := 
+  | UnitT
+  | UnionT (A : lang_ty) (B : lang_ty)
+  | ClassT (t : tag).
+Canonical Structure lang_tyO : ofe := leibnizO lang_ty.
+
+(* classe types have a single field, for now *)
+Definition class_def := lang_ty.
+Definition class_defs := gmap tag class_def.
+
 Section proofs.
 Context `{!sem_heapG Σ}.
 Notation iProp := (iProp Σ).
 
-Inductive langty := 
-  | UnitT
-  | UnionT (A : langty) (B : langty)
-  | ClassT (t : tag) (F : langty).
+(* assume a given set of class definitions *)
+Context (Δ : class_defs).
 
 (* the interpretation of types is simply given by
    the carrier set of the sem_typeO ofe *)
-Definition interp := ofe_car (sem_typeO Σ).
+Notation interpO := (sem_typeO Σ).
+Definition interp := ofe_car interpO.
 Eval hnf in interp.
 
 (* now, let's interpret some types *)
@@ -49,17 +59,57 @@ Context (γ : gname).
 Notation sem_heap_mapsto ℓ t iF :=
   (own γ (gmap_view_frag ℓ DfracDiscarded (t, Next iF))).
 
+Notation ty_interpO := (lang_ty -d> interpO).
+
 (* interpret a class type given the tag and the
    interpretation for the unique field type *)
-Definition interp_class (t : tag) (iF : interp) : interp :=
-  λ (w : value), (∃ ℓ, ⌜w = LocV ℓ⌝ ∗ sem_heap_mapsto ℓ t iF)%I.
+Definition interp_class (t : tag) (rec : ty_interpO) : interp :=
+  λ (w : value),
+    (∃ ℓ fty, ⌜w = LocV ℓ ∧ Δ !! t = Some fty⌝ ∗
+       ▷ ∃ iF, iF ≡ rec fty ∗ sem_heap_mapsto ℓ t iF)%I.
 
-Fixpoint interp_type (ty : langty) : interp :=
-  match ty with
-  | UnitT => interp_unit
-  | UnionT A B => interp_union (interp_type A) (interp_type B)
-  | ClassT t F => interp_class t (interp_type F)
-  end.
+(* we use a blend of Coq/Iris recursion, the
+   Coq recursion lets us handle simple structural
+   cases, and we use Iris' recursion to deal with
+   the more complicated case of class types *)
+Definition pre_interp_type (rec : ty_interpO) : ty_interpO :=
+  λ (ty : lang_ty),
+    (fix go (ty : lang_ty) : interp :=
+       match ty with
+       | UnitT => interp_unit
+       | UnionT A B => interp_union (go A) (go B)
+       | ClassT t => interp_class t rec
+       end) ty.
+
+(* we cannot use solve_contractive out of the box
+   because of the 'fix' combinator above *)
+Local Instance pre_interp_type_contractive :
+  Contractive pre_interp_type.
+Proof.
+  move=> n rx ry H. elim.
+  - done.
+  - move=>?????/=. rewrite /interp_union. by f_equiv.
+  - move=>??/=. rewrite /interp_class.
+    repeat first [f_contractive | f_equiv].
+    by apply H.
+Qed.
+
+(* the interpretation of types can now be
+   defined as a fixpoint (because class types
+   can be (mutually) recursive) *)
+Definition interp_type : ty_interpO :=
+  fixpoint pre_interp_type.
+
+(* todo, inconvenient for class types; we
+   should rework the lemma in that case *)
+Lemma interp_type_unfold (ty : lang_ty) (v : value) :
+  interp_type ty v ⊣⊢ pre_interp_type interp_type ty v.
+Proof.
+  rewrite {1}/interp_type.
+  (* TROUBLE HERE *)
+  rewrite (fixpoint_unfold pre_interp_type).
+Qed.
+
 
 (* concrete heaps *)
 Definition heap : Type := gmap loc (tag * value).
@@ -99,6 +149,7 @@ Proof.
   iDestruct "Hlook" as %[[<- [= <- <-]]|[Hℓ Hlook]].
   - iExists _. rewrite lookup_insert.
     iSplitR; first done.
+    rewrite interp_type_unfold.
     by rewrite /= /interp_unit.
   - iDestruct ("Hm" with "[]") as (iF) "[% HiF]"; first done.
     iExists _. rewrite lookup_insert_ne; last done.
