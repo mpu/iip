@@ -10,7 +10,6 @@ Inductive value : Set :=
   | UnitV
   | LocV (ℓ : loc).
 Canonical Structure valueO : ofe := leibnizO value.
-
 Local Instance value_inhabited : Inhabited value := populate UnitV.
 
 Canonical Structure tagO : ofe := discreteO tag.
@@ -86,7 +85,7 @@ Definition interp_type_pre (rec : ty_interpO) : ty_interpO :=
 Local Instance interp_type_pre_contractive :
   Contractive interp_type_pre.
 Proof.
-  move=>??? H. elim=>*/=; solve_proper_core
+  move=>????. elim=>*/=; solve_proper_core
       ltac:(fun _ => first [done | f_contractive | f_equiv]).
 Qed.
 
@@ -108,7 +107,7 @@ Definition heap : Type := gmap loc (tag * value).
 (* heap models relation; the semantic heap does
    not appear because it is hidden in iProp  *)
 Definition heap_models (h : heap) : iProp :=
-  ∃ sh,
+  ∃ (sh : gmap loc (prodO tagO (laterO interpO))),
     own γ (gmap_view_auth 1 sh) ∗ ⌜dom (gset loc) sh = dom _ h⌝ ∗
     ∀ (ℓ : loc) (t : tag) (v : value),
       ⌜h !! ℓ = Some (t, v)⌝ -∗
@@ -127,9 +126,7 @@ Proof.
   iDestruct "Hdom" as %Hdom.
   iMod (own_update with "Hown") as "[Hown Hfrag]".
   { apply (gmap_view_alloc _ new DfracDiscarded); last done.
-    (* the typeclasses seem to be messed up below, I should be able
-       to use not_elem_of_dom directly *) 
-    move: Hnew. rewrite -!(@not_elem_of_dom _ _ (gset loc)).
+    move: Hnew. rewrite -!(not_elem_of_dom (D:=gset loc)).
     by move: Hdom => ->. }
   iIntros "!>". iFrame.
   iExists _. iFrame. iSplitR.
