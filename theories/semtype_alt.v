@@ -71,21 +71,21 @@ Context `{!sem_heapG Σ}.
 Context (Δ: stringmap classDef).
 Notation iProp := (iProp Σ).
 
-Inductive extends (target: tag) : tag -> Prop :=
-  | ERefl : extends target target
-  | ESuper current super cdef :
+Inductive ancestor (target: tag) : tag -> Prop :=
+  | ARefl : ancestor target target
+  | ASuper current super cdef :
       Δ !! current = Some cdef ->
       cdef.(superclass) = Some super ->
-      extends target super ->
-      extends target current
+      ancestor target super ->
+      ancestor target current
 .
-Hint Constructors extends : core.
+Hint Constructors ancestor : core.
 
-Notation "A '`extends`' B" := (extends B A) (at level 70, no associativity).
+Local Notation "A '`inherits`' B" := (ancestor B A) (at level 70, no associativity).
 
-Lemma extends_trans:
+Lemma inherits_trans:
   forall A B C,
-  A `extends` B -> B `extends` C -> A `extends` C.
+  A `inherits` B -> B `inherits` C -> A `inherits` C.
 Proof.
   intros A B C h; revert C.
   induction h as [ | current super cdef hin hsuper h hi]; intros C hC; first by done.
@@ -96,10 +96,10 @@ Qed.
 (* Note useful, just for sanity check: extends are chains.
  * if A extends B and C, then either B extends C or C extends B.
  *)
-Corollary extends_is_chain:
+Corollary inherits_is_chain:
   forall A B C,
-   A `extends` B -> A `extends` C->
-  (C `extends` B \/ B `extends` C).
+   A `inherits` B -> A `inherits` C->
+  (C `inherits` B \/ B `inherits` C).
 Proof.
   intros A B C h; revert C.
   induction h as [ | current super cdef hin hsuper h hi]; intros C hCA; first by right.
@@ -127,39 +127,49 @@ Inductive has_field (fname: string) : tag -> Prop :=
 Hint Constructors has_field : core.
 
 (* all fields of class cname are in the fnames set *)
-(* TODO: We don't check types, change this to take a string set instead *)
-Definition fields_incl (cname: tag) (fnames: stringmap ty) : Prop :=
-  ∀ fname, has_field fname cname → fname ∈ dom stringset fnames.
+Definition has_fields (cname: tag) (fnames: stringset) : Prop :=
+  ∀ fname, has_field fname cname ↔ fname ∈ fnames.
 
-Lemma has_field_extends: forall A B, A `extends` B ->
+Lemma has_fields_fun: forall c fs0 fs1,
+  has_fields c fs0 -> has_fields c fs1 -> fs0 = fs1.
+Proof.
+move => c fs0 fs1 h0 h1.
+unfold_leibniz.
+by unfold has_fields in *; set_solver.
+Qed.
+
+Lemma has_field_inherits: forall A B, A `inherits` B ->
   forall fname, has_field fname B -> has_field fname A.
 Proof.
 move => A B.
 elim => [ | current super cdef hcdef hsuper h hi]; first done.
 move => fname hB.
-case_eq (cdef.(classfields) !! fname) => [ ty | ] hfields.
+destruct (cdef.(classfields) !! fname) as [ ty | ] eqn:hfields.
 { by apply HasField with cdef ty. }
 eapply InheritsField; [ done | done | done | ].
 by apply hi.
 Qed.
 
-Lemma fields_incl_extends: forall A B, A `extends` B ->
-  forall fields, fields_incl A fields -> fields_incl B fields.
+Lemma has_fields_inherits: forall A B, A `inherits` B ->
+  forall fieldsA fieldsB, has_fields A fieldsA -> has_fields B fieldsB ->
+  fieldsB ⊆ fieldsA.
 Proof.
-move => A B hext fields hsB fname hA.
-apply hsB.
-eapply has_field_extends; done.
+move => A B hext fieldsA fieldsB hA hB f hf.
+apply hB in hf.
+eapply has_field_inherits in hf; last by apply hext.
+now apply hA.
 Qed.
 
 Inductive subtype : ty -> ty -> Prop :=
   | SubMixed : forall ty, subtype ty MixedT
-  | SubClass : forall A B, A `extends` B -> subtype (ClassT A) (ClassT B)
+  | SubClass : forall A B, A `inherits` B -> subtype (ClassT A) (ClassT B)
   | SubMixed2: subtype MixedT (UnionT NonNullT NullT)
   | SubIntNonNull: subtype IntT NonNullT
   | SubBoolNonNull: subtype BoolT NonNullT
   | SubClassNonNull: forall A, subtype (ClassT A) NonNullT
   | SubUnionUpper1 : forall s t, subtype s (UnionT s t)
   | SubUnionUpper2 : forall s t, subtype t (UnionT s t)
+  (* Do we need this one *)
   | SubUnionLeast : forall s t u, subtype s u -> subtype t u -> subtype (UnionT s t) u
   | SubInterLower1 : forall s t, subtype (InterT s t) s
   | SubInterLower2 : forall s t, subtype (InterT s t) t
@@ -256,7 +266,8 @@ Definition interp_tys_next (rec: ty_interpO) (ftys: stringmap ty) : gmapO string
    interpretation of their fields *)
 Definition interp_class (cname : tag) (rec : ty_interpO) : interp :=
   λ (w : value),
-    (∃ ℓ t fields, ⌜w = LocV ℓ ∧ extends cname t ∧ fields_incl t fields⌝ ∗
+    (∃ ℓ t (fields:stringmap ty),
+    ⌜w = LocV ℓ ∧ t `inherits` cname ∧ has_fields t (dom _ fields)⌝ ∗
     sem_heap_mapsto ℓ t (interp_tys_next rec fields))%I.
 
 (* we use a blend of Coq/Iris recursion, the
@@ -281,20 +292,15 @@ Definition interp_type_pre (rec : ty_interpO) : ty_interpO :=
 Section gmap.
   Context {K: Type} {HKeqdec: EqDecision K} {HKcount: Countable K}.
 
-  Lemma gmap_fmap_ext_ne 
-    {A} {B : ofe} (f g : A → B) (m : gmap K A) n :
-    (∀ x, f x ≡{n}≡ g x) → f <$> m ≡{n}≡ g <$> m.
-  Proof.
-    intros Hf k.
-    induction m as [|i x m Hi IH] using map_ind; move => /=.
-    - by rewrite !lookup_fmap !lookup_empty /=.
-    - rewrite !lookup_fmap.
-      destruct (HKeqdec k i) as [ -> | hne].
-      + rewrite !lookup_insert /=.
-        now apply Some_Forall2.
-      + rewrite !lookup_insert_ne //=.
-        by rewrite !lookup_fmap in IH.
-  Qed.
+	Lemma gmap_fmap_ne_ext `{Countable K}
+	{A} {B : ofe} (f1 f2 : A → B) (m : gmap K A) n :
+	(∀ (i: K) (x: A), m !! i = Some x -> f1 x ≡{n}≡ f2 x) →
+	f1 <$> m ≡{n}≡ f2 <$> m.
+	Proof.
+		move => Hf i.
+		rewrite !lookup_fmap.
+		by destruct (m !! i) eqn:?; constructor; eauto.
+	Qed.
 End gmap.
 
 (* we cannot use solve_contractive out of the box because of
@@ -313,7 +319,7 @@ move => v; rewrite /interp_class.
 do 3 (f_equiv; intro).
 do 4 f_equiv.
 rewrite /interp_tys_next /interp_ty_next.
-apply gmap_fmap_ext_ne => typ.
+apply gmap_fmap_ne_ext => k ty hin.
 f_contractive.
 by destruct n.
 Qed.
@@ -330,29 +336,9 @@ Proof.
   apply (fixpoint_unfold interp_type_pre ty v).
 Qed.
 
-(* concrete heaps *)
-Definition heap : Type := gmap loc (tag * stringmap value).
-
-(* heap models relation; the semantic heap does
-   not appear because it is hidden in iProp  *)
-(* Helper defintion to state that fields are correctly modeled *)
-Definition heap_models_fields
-  (iFs: stringmap (laterO (sem_typeO Σ))) (vs: stringmap value) : iProp :=
-  ⌜dom stringset vs = dom _ iFs⌝ ∗
-  ∀ f iF,
-  ⌜iFs !! f = Some iF⌝ -∗ ∃ v, (⌜vs !! f = Some v⌝ ∗ match iF with Next ϕ => ϕ v end).
-
-Definition heap_models (h : heap) : iProp :=
-  ∃ (sh: gmap loc (tag * stringmap (laterO (sem_typeO Σ)))),
-    own γ (gmap_view_auth 1 sh) ∗ ⌜dom (gset loc) sh = dom _ h⌝ ∗
-    ∀ (ℓ : loc) (t : tag) (vs : stringmap value),
-      ⌜h !! ℓ = Some (t, vs)⌝ -∗
-        ∃ (iFs : stringmap (laterO (sem_typeO Σ))),
-        ⌜sh !! ℓ = Some (t, iFs)⌝  ∗ heap_models_fields iFs vs.
-
 (* A <: B -> ΦA ⊂ ΦB *)
 Theorem subtype_is_inclusion:
-  forall A B, A <: B -> 
+  forall A B, A <: B ->
   forall v,
   interp_type A v -∗ interp_type B v.
 Proof.
@@ -364,7 +350,7 @@ induction 1 as [A | A B hext | | | | A | A B| A B | A B C h0 hi0 h1 hi1
   + iIntros "h"; by repeat iLeft.
   + iIntros "h"; by iLeft; iRight; iLeft.
   + by rewrite /interp_nothing; iIntros "h".
-  + done. 
+  + done.
   + rewrite /interp_class => cname.
     iIntros "h".
     iDestruct "h" as (ℓ t fields) "[%h0 h1]".
@@ -392,7 +378,7 @@ induction 1 as [A | A B hext | | | | A | A B| A B | A B C h0 hi0 h1 hi1
   iExists ℓ, t, fields.
   iSplit.
   { iPureIntro; split; first by done.
-    split ; first by eapply extends_trans.
+    split ; first by eapply inherits_trans.
     done.
   }
   by iFrame.
@@ -429,6 +415,27 @@ induction 1 as [A | A B hext | | | | A | A B| A B | A B C h0 hi0 h1 hi1
   iApply hi1.
   by iApply hi0.
 Qed.
+
+(* concrete heaps *)
+Definition heap : Type := gmap loc (tag * stringmap value).
+
+(* heap models relation; the semantic heap does
+   not appear because it is hidden in iProp  *)
+(* Helper defintion to state that fields are correctly modeled *)
+Definition heap_models_fields
+  (iFs: stringmap (laterO (sem_typeO Σ))) (vs: stringmap value) : iProp :=
+  ⌜dom stringset vs = dom _ iFs⌝ ∗
+  ∀ f iF,
+  ⌜iFs !! f = Some iF⌝ -∗ ∃ v, (⌜vs !! f = Some v⌝ ∗ match iF with Next ϕ => ϕ v end).
+
+Definition heap_models (h : heap) : iProp :=
+  ∃ (sh: gmap loc (tag * stringmap (laterO (sem_typeO Σ)))),
+    own γ (gmap_view_auth 1 sh) ∗ ⌜dom (gset loc) sh = dom _ h⌝ ∗
+    ∀ (ℓ : loc) (t : tag) (vs : stringmap value),
+      ⌜h !! ℓ = Some (t, vs)⌝ -∗
+        ∃ (iFs : stringmap (laterO (sem_typeO Σ))),
+        ⌜sh !! ℓ = Some (t, iFs)⌝ ∗ heap_models_fields iFs vs.
+
 End proofs.
 
 Section Examples.
@@ -439,7 +446,6 @@ Notation interpO := (sem_typeO Σ).
 
 Definition sem_heap_mapsto ℓ t (iFs: gmapO string (laterO interpO)) :=
   (own γ (gmap_view_frag ℓ DfracDiscarded (t, iFs))).
-
 
 (*
 class C {
@@ -473,7 +479,7 @@ move => fname; split => [hf | ->].
 - inversion hf; subst; clear hf.
   + rewrite /Δ /= lookup_insert_ne //= lookup_insert in H.
     injection H; intros <-; clear H.
-    case_eq (string_eq_dec fname "foo") => [he | hne] ?; first by subst.
+    destruct (string_eq_dec fname "foo") as [he | hne] eqn:?; first by subst.
     by rewrite /C lookup_insert_ne //= in H0.
   + rewrite /Δ /= lookup_insert_ne //= lookup_insert in H.
     injection H; intros <-; clear H.
@@ -482,28 +488,54 @@ move => fname; split => [hf | ->].
   by rewrite /C lookup_insert //=.
 Qed.
 
-(* Sanity checks for fields and inheritance *)
-Lemma check_fields_C : fields_incl Δ "C" {["foo" := IntT]}.
+Fact D_field : forall fname,
+  has_field Δ fname "D" <-> (fname = "foo" \/ fname = "rec").
 Proof.
-move => fname h.
-by apply C_field in h; subst.
+move => f; split => [hf | [ -> | ->]].
+- inversion hf; subst; clear hf.
+  + rewrite /Δ //= lookup_insert in H.
+    injection H; intros <-; clear H.
+    destruct (string_eq_dec f "foo") as [-> | hne]; first by subst.
+    destruct (string_eq_dec f "rec") as [-> | hne2]; first by subst; right.
+    by rewrite /C lookup_insert_ne //= in H0.
+  + rewrite /Δ //= lookup_insert in H.
+    injection H; intros <-; clear H.
+    rewrite /D /= in H1.
+    injection H1; intros <-; clear H1.
+    apply C_field in H2; now subst; left.
+- eapply InheritsField; [ done | done | done | by apply C_field].
+- econstructor; first by done.
+  by rewrite /C lookup_insert //=.
+Qed.
+
+(* Sanity checks for fields and inheritance *)
+Lemma check_fields_C : has_fields Δ "C" {["foo"]}.
+Proof.
+move => f; split => [h | h].
+- by apply C_field in h; subst.
+- apply elem_of_singleton_1 in h; subst.
+  by econstructor.
 Qed.
 
 Lemma check_fields_D :
-  fields_incl Δ "D" (<["foo" := IntT]>{["rec" := ClassT "D"]}).
+  has_fields Δ "D" ({["foo"; "rec"]}).
 Proof.
-move => fname h.
-inversion h; subst; clear h.
-- case_eq (string_eq_dec fname "rec") => [hrec | hnrec] hdrec;
-    first by subst.
-  rewrite /Δ lookup_insert in H.
-  injection H; intros <-; clear H.
-  by rewrite lookup_insert_ne //= in H0.
-- rewrite /Δ lookup_insert in H.
-  injection H; intros <-; clear H.
-  rewrite /D /= in H1.
-  injection H1; intros <-; clear H1.
-  by apply C_field in H2; subst.
+move => f; split => [h | ].
+- inversion h; subst; clear h.
+  + destruct (string_eq_dec f "rec") as [hrec | hnrec] eqn:hdrec;
+      first by subst.
+    rewrite /Δ lookup_insert in H.
+    injection H; intros <-; clear H.
+    by rewrite lookup_insert_ne //= in H0.
+  + rewrite /Δ lookup_insert in H.
+    injection H; intros <-; clear H.
+    rewrite /D /= in H1.
+    injection H1; intros <-; clear H1.
+    by apply C_field in H2; subst.
+- rewrite elem_of_union !elem_of_singleton.
+  case; move => ->.
+  { by eapply InheritsField; last by apply check_fields_C. }
+  by econstructor.
 Qed.
 
 Lemma alloc_unit_class_lemma (h : heap) (new : loc) :
@@ -517,7 +549,7 @@ Proof.
   iMod (own_update with "Hown") as "[Hown Hfrag]".
   { apply (gmap_view_alloc _ new DfracDiscarded); last done.
     (* the typeclasses seem to be messed up below, I should be able
-       to use not_elem_of_dom directly *) 
+       to use not_elem_of_dom directly *)
     move: Hnew. rewrite -!(@not_elem_of_dom _ _ (gset loc)).
     by move: Hdom => ->. }
   iIntros "!>". iFrame.
@@ -544,5 +576,141 @@ Proof.
     iSplitR; first by done.
     by iSplitR.
 Qed.
+
+Remark inheritsD: forall t, ancestor Δ "D" t -> t = "D".
+Proof.
+move => t h.
+inversion h; subst; clear h; first done.
+destruct cdef as [classname superclass ? ?]; simpl in *.
+destruct (string_eq_dec t "D") as [-> | hne]; first done.
+destruct (string_eq_dec t "C") as [-> | hne2].
+- rewrite lookup_insert_ne in H; last by done.
+  simpl in *.
+  rewrite lookup_insert /= in H.
+  by injection H; intros; subst; clear H.
+- by rewrite !lookup_insert_ne //= in H.
+Qed.
+
+(*** FROM HERE, WORK IN PROGRESS ***)
+Lemma alloc_unit_class_lemma_rec (h : heap) (l : loc) frag:
+  h !! l = Some ("D", frag) →
+  interp_type Δ γ (ClassT "D") (LocV l) -∗
+  heap_models γ h -∗
+  heap_models γ (<[ l := ("D", <["rec" := LocV l]>frag) ]> h).
+Proof.
+  move=> Hl. iIntros "Hsem Hm".
+  iDestruct "Hm" as (sh) "[Hown [Hdom Hm]]".
+  iDestruct "Hdom" as %Hdom.
+  iExists sh.
+  rewrite interp_type_unfold /= /interp_class.
+  iDestruct "Hsem" as (ll tt fields) "[%hh hfrag]".
+  destruct hh as [[= <-] [hext hfields]].
+  apply inheritsD in hext; subst.
+  iDestruct (own_valid_2 with "Hown hfrag") as "#hf".
+  eapply has_fields_fun in hfields; last by apply check_fields_D.
+  (****)
+
+  iFrame. iSplitR.
+  { iPureIntro.
+    by rewrite dom_insert_lookup_L. }
+  iIntros (ℓ t vs) "Hlook".
+  rewrite lookup_insert_Some.
+  (* 0 *)
+  iDestruct "Hlook" as "[%hl | h]".
+  - destruct hl as [-> [= <- <-]].
+    iDestruct ("Hm" with "[]") as "h"; first done.
+    iDestruct "h" as (iFs) "[% [%hdom hifs]]".
+    iExists iFs.
+    iSplitR; first done.
+    rewrite /heap_models_fields.
+
+
+
+
+
+  (***** after 0 *)
+  iDestruct ("Hm" with "[]") as "h"; first done.
+  iDestruct "h" as (iFs) "[% hmod]".
+  rewrite /heap_models_fields.
+  iDestruct "hmod" as "[%hdom2 hfields]".
+  iExists iFs.
+  rewrite interp_type_unfold /= /interp_class.
+  iDestruct "Hsem" as (? ? fields) "[%hhsem hown]".
+  destruct hhsem as [[= <-] [hext hfields]].
+  iDestruct "Hlook" as %[[<- [= <- <-]]|[Hℓ Hlook]].
+
+    2: {
+
+  - iSplitR; first done.
+
+    {
+    rewrite /heap_models_fields.
+    iSplitR.
+    { iPureIntro.
+      rewrite dom_insert_lookup_L; first done.
+      apply elem_of_dom.
+      eapply hfields.
+      eapply fields_incl_extends.
+      by rewrite !dom_insert_L !dom_empty_L. }
+    iIntros (f iF).
+    rewrite !lookup_insert_Some.
+    iIntros "%Hf".
+
+
+  assert (hfrag:
+     ∀ (ℓ : loc) (t : tag) (vs : stringmap value),
+      ⌜h !! ℓ = Some (t, vs)⌝ -∗
+        ∃ (iFs : stringmap (laterO (sem_typeO Σ))),
+        ⌜sh !! ℓ = Some (t, iFs)⌝ ∗ heap_models_fields iFs vs.
+
+
+Lemma alloc_unit_class_lemma_rec (h : heap) (new : loc) :
+  h !! new = None →
+  heap_models γ h -∗ |==>
+   heap_models γ (<[ new := ("D", <["rec" := LocV new]>{[ "foo" := IntV 0 ]}) ]> h) ∗
+   sem_heap_mapsto new "D"
+     (<["rec" := Next (interp_type Δ γ (ClassT "D"))]>{[ "foo" := Next (interp_type Δ γ IntT)]}).
+Proof.
+  move=> Hnew. iIntros "Hm". iDestruct "Hm" as (sh) "[Hown [Hdom Hm]]".
+  iDestruct "Hdom" as %Hdom.
+  iMod (own_update with "Hown") as "[Hown Hfrag]".
+  { apply (gmap_view_alloc _ new DfracDiscarded); last done.
+    (* the typeclasses seem to be messed up below, I should be able
+       to use not_elem_of_dom directly *)
+    move: Hnew. rewrite -!(@not_elem_of_dom _ _ (gset loc)).
+    by move: Hdom => ->. }
+  iIntros "!>". iFrame.
+  iExists _. iFrame. iSplitR.
+  { iPureIntro. rewrite !dom_insert_L.
+    by move: Hdom => ->. }
+  iIntros (ℓ t vs) "Hlook".
+  rewrite lookup_insert_Some.
+  iDestruct "Hlook" as %[[<- [= <- <-]]|[Hℓ Hlook]].
+  - iExists _. rewrite lookup_insert.
+    iSplitR; first done.
+    rewrite /heap_models_fields.
+    iSplitR.
+    { iPureIntro. by rewrite !dom_insert_L !dom_empty_L. }
+    iIntros (f iF).
+    rewrite !lookup_insert_Some.
+    iIntros "%Hf".
+    destruct Hf as [ [<- <-] | ].
+    + iExists (LocV new); iSplit; first by done.
+      rewrite interp_type_unfold /= /interp_class.
+      iExists new, "D", (<["rec" := ClassT "D"]>{["foo" := IntT]}).
+      iSplit.
+      { iPureIntro; split; first by done.
+        split; first by constructor.
+        admit.
+      }
+
+  - iDestruct ("Hm" with "[]") as (iFs) "[% [%Hidom hisem]]"; first done.
+    rewrite /heap_models_fields.
+    iExists _. rewrite lookup_insert_ne; last done.
+    iSplitR; first by done.
+    by iSplitR.
+Qed.
+
+End Examples.
 
 End Examples.
