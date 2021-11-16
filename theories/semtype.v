@@ -109,20 +109,31 @@ Definition heap : Type := gmap loc (tag * value).
 Definition heap_models (h : heap) : iProp :=
   ∃ (sh : gmap loc (prodO tagO (laterO interpO))),
     own γ (gmap_view_auth 1 sh) ∗ ⌜dom (gset loc) sh = dom _ h⌝ ∗
-    ∀ (ℓ : loc) (t : tag) (v : value),
+    □ ∀ (ℓ : loc) (t : tag) (v : value),
       ⌜h !! ℓ = Some (t, v)⌝ -∗
-        ∃ (iF : interp), ⌜sh !! ℓ = Some (t, Next iF)⌝ ∗ iF v.
+        ∃ (iF : interp), sh !! ℓ ≡ Some (t, Next iF) ∗ ▷ iF v.
 
-(* the tag for a class C with a single unit field *)
-Definition tC : tag := 1%positive.
+(* we need interp_type and heap_models to be persistent,
+   otherwise there is no hope to prove the following or
+   create aliases in the programming language *)
+(*
+Lemma heap_models_class (h : heap) (l : loc) (t : tag) (ty : lang_ty) :
+  Δ !! t = Some ty →
+  heap_models h -∗
+  interp_type (ClassT t) (LocV l) -∗
+  ∃ v, ⌜h !! l = Some (t, v)⌝ ∗
+       heap_models h ∗
+       ▷ interp_type ty v.
+Proof.
+*)
 
-Lemma alloc_unit_class_lemma (h : heap) (new : loc) :
+Lemma alloc_unit_class_lemma (h : heap) (new : loc) (t : tag) :
   h !! new = None →
   heap_models h -∗ |==>
-   heap_models (<[ new := (tC, UnitV) ]> h) ∗
-   sem_heap_mapsto new tC (interp_type UnitT).
+   heap_models (<[ new := (t, UnitV) ]> h) ∗
+   sem_heap_mapsto new t (interp_type UnitT).
 Proof.
-  move=> Hnew. iIntros "Hm". iDestruct "Hm" as (sh) "[Hown [Hdom Hm]]".
+  move=> Hnew. iIntros "Hm". iDestruct "Hm" as (sh) "[Hown [Hdom #Hm]]".
   iDestruct "Hdom" as %Hdom.
   iMod (own_update with "Hown") as "[Hown Hfrag]".
   { apply (gmap_view_alloc _ new DfracDiscarded); last done.
@@ -132,16 +143,77 @@ Proof.
   iExists _. iFrame. iSplitR.
   { iPureIntro. rewrite !dom_insert_L.
     by move: Hdom => ->. }
-  iIntros (ℓ t v) "Hlook".
+  iModIntro. iIntros (???) "Hlook".
   rewrite lookup_insert_Some.
   iDestruct "Hlook" as %[[<- [= <- <-]]|[Hℓ Hlook]].
   - iExists _. rewrite lookup_insert.
     iSplitR; first done.
     rewrite interp_type_unfold /=.
     by rewrite /interp_unit.
-  - iDestruct ("Hm" with "[]") as (iF) "[% HiF]"; first done.
-    iExists _. rewrite lookup_insert_ne; last done.
-    by iSplitR.
+  - iDestruct ("Hm" with "[]") as (iF) "[Heq HiF]"; first done.
+    case Hsh : (sh !! ℓ) => [[]|].
+    + iExists _. iSplitR "HiF"; last done.
+      rewrite lookup_insert_ne; last done.
+      rewrite Hsh. iRewrite "Heq".
+      rewrite option_equivI prod_equivI /=.
+      done.
+    + rewrite option_equivI.
+      iDestruct "Heq" as "[]".
+Qed.
+
+Example tie_heap_loop (h : heap) (l : loc) (t : tag) :
+  Δ !! t = Some (ClassT t) → (* the only property if of type t *)
+  interp_type (ClassT t) (LocV l) -∗
+  heap_models h -∗
+  heap_models (<[ l := (t, LocV l) ]> h).
+Proof.
+  move=> HΔ. iIntros "Hl Hh".
+  iDestruct "Hh" as (sh) "[H● [Hdom #Hm]]".
+  iDestruct "Hdom" as %Hdom.
+  rewrite interp_type_unfold /= /interp_class.
+  iDestruct "Hl" as (??) "[H #H◯]".
+  iDestruct "H" as %[[= <-] HΔ'].
+  rewrite HΔ in HΔ'. move: HΔ' => [= <-].
+  (* use interp_type to show that is_Some (sh !! l) *)
+  iDestruct (own_valid_2 with "H● H◯") as "#Hv".
+  rewrite gmap_view_both_validI.
+  iDestruct "Hv" as "[_ Hsh]".
+  case Hsh : (sh !! l) => [[?[]]|]; last first.
+  by rewrite option_equivI; iDestruct "Hsh" as "[]".
+  rewrite option_equivI prod_equivI /= later_equivI.
+  iDestruct "Hsh" as "#[Heqt Heqi]".
+  have [[t' v] Hh] : is_Some (h !! l).
+  { apply (elem_of_dom (D:=gset loc)).
+    rewrite -Hdom elem_of_dom Hsh.
+    by eauto. }
+  (* Hm needs to be persistent (hence the □) otherwise
+     we would kill it here to get interp_type for l's
+     field but we would also need it later to show
+     heap_models *)
+  iDestruct ("Hm" $! l t' v with "[//]") as (?) "[Hsh Hv]".
+  rewrite Hsh option_equivI prod_equivI /= later_equivI.
+  iRewrite "Heqt" in "Hsh".
+  iDestruct "Hsh" as "#[Htt' Heqi']".
+  iDestruct "Htt'" as %H.
+  fold_leibniz. rewrite -H in Hh. clear H.
+  (* we now show heap_models of the new heap *)
+  iExists _. iFrame.
+  have -> : dom (gset loc) (<[l:=(t,LocV l)]>h) = dom _ h.
+  { apply dom_insert_lookup_L. rewrite Hh. eauto. }
+  iSplitL; first done.
+  iModIntro. iIntros (???) "Hlook".
+  rewrite lookup_insert_Some.
+  iDestruct "Hlook" as %[[<- [= <- <-]]|[Hℓ Hlook]];
+    last by iApply "Hm".
+  iExists _. rewrite Hsh.
+  rewrite option_equivI prod_equivI /= later_equivI.
+  iRewrite "Heqt". iSplitL.
+  by iSplit; [done | iNext; by iRewrite "Heqi"].
+  iNext. iRewrite "Heqi'" in "Heqi".
+  rewrite discrete_fun_equivI. iSpecialize ("Heqi" $! v).
+  iRewrite "Heqi" in "Hv".
+  rewrite (interp_type_unfold _ (LocV l)) /= /interp_class.
+  iExists _, _. by iSplit.
 Qed.
 
 End proofs.
