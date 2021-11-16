@@ -125,22 +125,11 @@ Definition heap_models (h : heap) : iProp :=
       ⌜h !! ℓ = Some (t, v)⌝ -∗
         ∃ (iF : interp), sh !! ℓ ≡ Some (t, Next iF) ∗ ▷ iF v.
 
-(*
-Lemma heap_models_class (h : heap) (l : loc) (t : tag) (ty : lang_ty) :
-  Δ !! t = Some ty →
-  heap_models h -∗
-  interp_type (ClassT t) (LocV l) -∗
-  ∃ v, ⌜h !! l = Some (t, v)⌝ ∗
-       heap_models h ∗
-       ▷ interp_type ty v.
-Proof.
-*)
-
-Lemma alloc_unit_class_lemma (h : heap) (new : loc) (t : tag) :
+Example alloc_unit_class_lemma (h : heap) (new : loc) (t : tag) :
   h !! new = None →
   heap_models h -∗ |==>
-   heap_models (<[ new := (t, UnitV) ]> h) ∗
-   sem_heap_mapsto new t (interp_type UnitT).
+  heap_models (<[ new := (t, UnitV) ]> h) ∗
+  sem_heap_mapsto new t (interp_type UnitT).
 Proof.
   move=> Hnew. iIntros "Hm". iDestruct "Hm" as (sh) "[Hown [Hdom #Hm]]".
   iDestruct "Hdom" as %Hdom.
@@ -171,7 +160,7 @@ Proof.
 Qed.
 
 Example tie_heap_loop (h : heap) (l : loc) (t : tag) :
-  Δ !! t = Some (ClassT t) → (* the only property if of type t *)
+  Δ !! t = Some (ClassT t) → (* the only property is of type t *)
   interp_type (ClassT t) (LocV l) -∗
   heap_models h -∗
   heap_models (<[ l := (t, LocV l) ]> h).
@@ -223,6 +212,37 @@ Proof.
   iRewrite "Heqi" in "Hv".
   rewrite (interp_type_unfold _ (LocV l)) /= /interp_class.
   iExists _, _. by iSplit.
+Qed.
+
+Example one_shot_loop (h : heap) (l : loc) (t : tag) :
+  h !! l = None →
+  Δ !! t = Some (ClassT t) →
+  heap_models h -∗ |==>
+  heap_models (<[ l := (t, LocV l) ]> h).
+Proof.
+  move=> Hl HΔ. iIntros "Hh".
+  iDestruct "Hh" as (sh) "[H● [Hdom #Hm]]".
+  iDestruct "Hdom" as %Hdom.
+  iMod (own_update with "H●") as "[H● H◯]".
+  { apply (gmap_view_alloc _ l DfracDiscarded
+      (t, Next (interp_type (ClassT t)))); last done.
+    apply (not_elem_of_dom (D:=gset loc)).
+    by rewrite Hdom not_elem_of_dom. }
+  iDestruct "H◯" as "#H◯".
+  iModIntro. iExists _. iFrame. iSplitR.
+  { iPureIntro. rewrite !dom_insert_L.
+    by rewrite Hdom. }
+  iModIntro. iIntros (l' t' v) "H".
+  rewrite lookup_insert_Some.
+  iDestruct "H" as %[[<- [= <- <-]]|[??]].
+  - iExists _. rewrite lookup_insert.
+    rewrite option_equivI prod_equivI /=.
+    iSplitR; first done.
+    rewrite interp_type_unfold /= /interp_class.
+    iNext. iExists _, _. by iSplitR.
+  - iDestruct ("Hm" $! l' with "[//]") as (iF) "[??]".
+    iExists _. rewrite lookup_insert_ne; last done.
+    iSplit; eauto.
 Qed.
 
 End proofs.
