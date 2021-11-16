@@ -125,9 +125,6 @@ Definition heap_models (h : heap) : iProp :=
       ⌜h !! ℓ = Some (t, v)⌝ -∗
         ∃ (iF : interp), sh !! ℓ ≡ Some (t, Next iF) ∗ ▷ iF v.
 
-(* we need interp_type and heap_models to be persistent,
-   otherwise there is no hope to prove the following or
-   create aliases in the programming language *)
 (*
 Lemma heap_models_class (h : heap) (l : loc) (t : tag) (ty : lang_ty) :
   Δ !! t = Some ty →
