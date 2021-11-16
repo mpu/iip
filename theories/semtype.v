@@ -101,6 +101,18 @@ Proof.
   apply (fixpoint_unfold interp_type_pre ty v).
 Qed.
 
+Global Instance interp_type_persistent (ty : lang_ty) (v : value) :
+  Persistent (interp_type ty v).
+Proof.
+  elim: ty => [].
+  - rewrite interp_type_unfold. apply _.
+  - move=> A Ha B Hb. rewrite interp_type_unfold /=.
+    rewrite /interp_union. rewrite -!interp_type_unfold.
+    by apply bi.or_persistent.
+  - move=>?. rewrite interp_type_unfold /=.
+    rewrite /interp_class. apply _.
+Qed.
+
 (* concrete heaps *)
 Definition heap : Type := gmap loc (tag * value).
 
