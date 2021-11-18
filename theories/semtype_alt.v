@@ -331,6 +331,7 @@ elim => [ | | | | cname | | |s hs t ht | s hs t ht] v;
   by apply bi.and_persistent; rewrite -!interp_type_unfold.
 Qed.
 
+
 (* A <: B -> ΦA ⊂ ΦB *)
 Theorem subtype_is_inclusion:
   forall A B, A <: B ->
@@ -409,6 +410,20 @@ induction 1 as [A | A B hext | | | | A | A B| A B | A B C h0 hi0 h1 hi1
   iIntros "h".
   iApply hi1.
   by iApply hi0.
+Qed.
+
+Lemma inherits_is_sub: forall C D, D `inherits` C -> (ClassT D) <: (ClassT C).
+Proof.  by eauto. Qed.
+
+Lemma interp_type_inherits (l : loc) (C D: tag):
+  D `inherits` C ->
+  interp_type (ClassT D) (LocV l) -∗
+  interp_type (ClassT C) (LocV l).
+Proof.
+move => hDsubC.
+iIntros "h".
+iApply subtype_is_inclusion; first by apply inherits_is_sub.
+done.
 Qed.
 
 (* concrete heaps *)
@@ -550,7 +565,7 @@ move => f; split => [h | ].
   by econstructor.
 Qed.
 
-Lemma alloc_unit_class_lemma (h : heap) (new : loc) :
+Example alloc_unit_class_lemma (h : heap) (new : loc) :
   h !! new = None →
   heap_models γ h -∗ |==>
    heap_models γ (<[ new := ("C", {[ "foo" := IntV 0 ]}) ]> h) ∗
@@ -612,8 +627,7 @@ destruct (string_eq_dec t "C") as [-> | hne2].
 - by rewrite !lookup_insert_ne //= in H.
 Qed.
 
-(*** FROM HERE, WORK IN PROGRESS ***)
-Lemma alloc_unit_class_lemma_rec (h : heap) (l : loc) frag:
+Example alloc_unit_class_lemma_rec (h : heap) (l : loc) frag:
   h !! l = Some ("D", frag) →
   interp_type Δ γ (ClassT "D") (LocV l) -∗
   heap_models γ h -∗
@@ -695,3 +709,73 @@ Proof.
       by apply check_fields_D.
     }
 Qed.
+
+Definition one_shot_loop_sh : stringmap (laterO (sem_typeO Σ)) :=
+  {[
+    "foo" := Next (interp_type Δ γ IntT);
+    "rec" := Next (interp_type Δ γ (ClassT "D"))
+    ]}.
+
+Example one_shot_loop (h : heap) (new : loc):
+  h !! new = None →
+  heap_models γ h -∗ |==>
+      heap_models γ (<[ new := ("D", {[ "foo" := IntV 0; "rec" := LocV new]}) ]> h).
+Proof.
+  move=> Hl. iIntros "Hh".
+  iDestruct "Hh" as (sh) "[H● [%Hdom #Hm]]".
+  iMod (own_update with "H●") as "[H● H◯]".
+  { apply (gmap_view_alloc _ new DfracDiscarded); last done.
+    apply (not_elem_of_dom (D:=gset loc)).
+    by rewrite Hdom not_elem_of_dom. }
+  iDestruct "H◯" as "#H◯".
+  iModIntro. iExists _. iFrame. iSplitR.
+  { iPureIntro. rewrite !dom_insert_L.
+    by rewrite Hdom. }
+  iModIntro. iIntros (l' t' v) "H".
+  rewrite lookup_insert_Some.
+  iDestruct "H" as %[[<- [= <- <-]]|[??]].
+  - iExists one_shot_loop_sh. rewrite lookup_insert.
+    rewrite option_equivI /=.
+    iSplitR; first done.
+    rewrite /heap_models_fields.
+    iSplitR; first by iPureIntro.
+    iIntros (f iF) "hos".
+    rewrite /one_shot_loop_sh.
+    destruct (string_eq_dec f "foo") as [-> | hne0].
+    { rewrite !lookup_insert /= option_equivI later_equivI.
+      iExists (IntV 0); iSplitR; first by iPureIntro.
+      iNext.
+      rewrite discrete_fun_equivI.
+      iSpecialize ("hos" $! (IntV 0)).
+      iRewrite -"hos".
+      rewrite interp_type_unfold /= /interp_int.
+      now iExists 0.
+    }
+    destruct (string_eq_dec f "rec") as [-> | hne1].
+    { rewrite lookup_insert_ne // lookup_insert.
+      rewrite lookup_insert_ne // lookup_insert option_equivI later_equivI.
+      iExists (LocV new); iSplitR; first by iPureIntro.
+      iNext.
+      rewrite discrete_fun_equivI.
+      iSpecialize ("hos" $! (LocV new)).
+      iRewrite -"hos".
+      rewrite interp_type_unfold /= /interp_class.
+      iExists new, "D", ({["foo" := IntT; "rec" := ClassT "D"]}).
+      iSplitR.
+      { iPureIntro; split; first done.
+        split; first constructor.
+        by apply check_fields_D.
+      }
+      rewrite /interp_tys_next /interp_ty_next /=.
+      rewrite !fmap_insert fmap_empty.
+      done.
+    }
+    rewrite !lookup_insert_ne //= lookup_empty.
+    rewrite option_equivI.
+    done.
+  - iDestruct ("Hm" $! l' with "[//]") as (iF) "[??]".
+    iExists _. rewrite lookup_insert_ne; last done.
+    iSplit; eauto.
+Qed.
+
+End Examples.
