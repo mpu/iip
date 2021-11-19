@@ -422,19 +422,19 @@ Proof.
     + by iApply "Hh".
 Qed.
 
-Notation "|=▷=>^ n Q" := (Nat.iter n (λ P, |==> ▷ P) Q)%I
+Notation "|=▷^ n Q" := (Nat.iter n (λ P, |==> ▷ P) Q)%I
   (at level 99, n at level 9, Q at level 200,
-   format "|=▷=>^ n  Q") : bi_scope.
+   format "|=▷^ n  Q") : bi_scope.
 
-Lemma updN_zero (Q : iProp) : (|=▷=>^0 Q) ⊣⊢ Q.
+Lemma updN_zero (Q : iProp) : (|=▷^0 Q) ⊣⊢ Q.
 Proof. done. Qed.
 
 Lemma updN_S n (Q : iProp) :
-  (|=▷=>^(S n) Q) ⊣⊢ |==> ▷ |=▷=>^n Q.
+  (|=▷^(S n) Q) ⊣⊢ |==> ▷ |=▷^n Q.
 Proof. done. Qed.
 
 Lemma updN_mono n (P Q : iProp) :
-  (P -∗ Q) → (|=▷=>^n P) -∗ (|=▷=>^n Q).
+  (P -∗ Q) → (|=▷^n P) -∗ (|=▷^n Q).
 Proof.
   elim: n => [//|n HI H].
   rewrite !updN_S.
@@ -463,7 +463,7 @@ Lemma cmd_adequacy lty lty' st cmd st' :
   cmd_eval st cmd st' →
   cmd_has_ty lty cmd lty' →
   ∃ n,
-    heap_models st.2 ∗ interp_local_tys lty st.1 -∗ |=▷=>^n
+    heap_models st.2 ∗ interp_local_tys lty st.1 -∗ |=▷^n
     heap_models st'.2 ∗ interp_local_tys lty' st'.1.
 Proof.
   move=> E. move: lty lty'. elim: E.
