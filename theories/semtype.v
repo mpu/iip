@@ -126,138 +126,6 @@ Proof.
     by rewrite interp_type_unfold /=.
 Qed.
 
-(* concrete heaps *)
-Definition heap : Type := gmap loc (tag * value).
-
-(* heap models relation; the semantic heap does
-   not appear because it is hidden in iProp  *)
-Definition heap_models (h : heap) : iProp :=
-  ∃ (sh : gmap loc (prodO tagO (laterO interpO))),
-    own γ (gmap_view_auth 1 sh) ∗ ⌜dom (gset loc) sh = dom _ h⌝ ∗
-    □ ∀ (ℓ : loc) (t : tag) (v : value),
-      ⌜h !! ℓ = Some (t, v)⌝ -∗
-        ∃ (iF : interp), sh !! ℓ ≡ Some (t, Next iF) ∗ ▷ iF v.
-
-Example alloc_unit_class_lemma (h : heap) (new : loc) (t : tag) :
-  h !! new = None →
-  heap_models h -∗ |==>
-  heap_models (<[ new := (t, IntV 0) ]> h) ∗
-  sem_heap_mapsto new t (interp_type IntT).
-Proof.
-  move=> Hnew. iIntros "Hm". iDestruct "Hm" as (sh) "[Hown [Hdom #Hm]]".
-  iDestruct "Hdom" as %Hdom.
-  iMod (own_update with "Hown") as "[Hown Hfrag]".
-  { apply (gmap_view_alloc _ new DfracDiscarded); last done.
-    move: Hnew. rewrite -!(not_elem_of_dom (D:=gset loc)).
-    by move: Hdom => ->. }
-  iIntros "!>". iFrame.
-  iExists _. iFrame. iSplitR.
-  { iPureIntro. rewrite !dom_insert_L.
-    by move: Hdom => ->. }
-  iModIntro. iIntros (???) "Hlook".
-  rewrite lookup_insert_Some.
-  iDestruct "Hlook" as %[[<- [= <- <-]]|[Hℓ Hlook]].
-  - iExists _. rewrite lookup_insert.
-    iSplitR; first done.
-    rewrite interp_type_unfold /=.
-    rewrite /interp_int. by eauto.
-  - iDestruct ("Hm" with "[]") as (iF) "[Heq HiF]"; first done.
-    case Hsh : (sh !! ℓ) => [[]|].
-    + iExists _. iSplitR "HiF"; last done.
-      rewrite lookup_insert_ne; last done.
-      rewrite Hsh. iRewrite "Heq".
-      rewrite option_equivI prod_equivI /=.
-      done.
-    + rewrite option_equivI.
-      iDestruct "Heq" as "[]".
-Qed.
-
-Example tie_heap_loop (h : heap) (l : loc) (t : tag) :
-  Δ !! t = Some (ClassT t) → (* the only property is of type t *)
-  interp_type (ClassT t) (LocV l) -∗
-  heap_models h -∗
-  heap_models (<[ l := (t, LocV l) ]> h).
-Proof.
-  move=> HΔ. iIntros "Hl Hh".
-  iDestruct "Hh" as (sh) "[H● [Hdom #Hm]]".
-  iDestruct "Hdom" as %Hdom.
-  rewrite interp_type_unfold /= /interp_class.
-  iDestruct "Hl" as (??) "[H #H◯]".
-  iDestruct "H" as %[[= <-] HΔ'].
-  rewrite HΔ in HΔ'. move: HΔ' => [= <-].
-  (* use interp_type to show that is_Some (sh !! l) *)
-  iDestruct (own_valid_2 with "H● H◯") as "#Hv".
-  rewrite gmap_view_both_validI.
-  iDestruct "Hv" as "[_ Hsh]".
-  case Hsh : (sh !! l) => [[?[]]|]; last first.
-  by rewrite option_equivI; iDestruct "Hsh" as "[]".
-  rewrite option_equivI prod_equivI /= later_equivI.
-  iDestruct "Hsh" as "#[Heqt Heqi]".
-  have [[t' v] Hh] : is_Some (h !! l).
-  { apply (elem_of_dom (D:=gset loc)).
-    rewrite -Hdom elem_of_dom Hsh.
-    by eauto. }
-  (* Hm needs to be persistent (hence the □) otherwise
-     we would kill it here to get interp_type for l's
-     field but we would also need it later to show
-     heap_models *)
-  iDestruct ("Hm" $! l t' v with "[//]") as (?) "[Hsh Hv]".
-  rewrite Hsh option_equivI prod_equivI /= later_equivI.
-  iRewrite "Heqt" in "Hsh".
-  iDestruct "Hsh" as "#[Htt' Heqi']".
-  iDestruct "Htt'" as %H.
-  fold_leibniz. rewrite -H in Hh. clear H.
-  (* we now show heap_models of the new heap *)
-  iExists _. iFrame.
-  have -> : dom (gset loc) (<[l:=(t,LocV l)]>h) = dom _ h.
-  { apply dom_insert_lookup_L. rewrite Hh. eauto. }
-  iSplitL; first done.
-  iModIntro. iIntros (???) "Hlook".
-  rewrite lookup_insert_Some.
-  iDestruct "Hlook" as %[[<- [= <- <-]]|[Hℓ Hlook]];
-    last by iApply "Hm".
-  iExists _. rewrite Hsh.
-  rewrite option_equivI prod_equivI /= later_equivI.
-  iRewrite "Heqt". iSplitL.
-  by iSplit; [done | iNext; by iRewrite "Heqi"].
-  iNext. iRewrite "Heqi'" in "Heqi".
-  rewrite discrete_fun_equivI. iSpecialize ("Heqi" $! v).
-  iRewrite "Heqi" in "Hv".
-  rewrite (interp_type_unfold _ (LocV l)) /= /interp_class.
-  iExists _, _. by iSplit.
-Qed.
-
-Example one_shot_loop (h : heap) (l : loc) (t : tag) :
-  h !! l = None →
-  Δ !! t = Some (ClassT t) →
-  heap_models h -∗ |==>
-  heap_models (<[ l := (t, LocV l) ]> h).
-Proof.
-  move=> Hl HΔ. iIntros "Hh".
-  iDestruct "Hh" as (sh) "[H● [Hdom #Hm]]".
-  iDestruct "Hdom" as %Hdom.
-  iMod (own_update with "H●") as "[H● H◯]".
-  { apply (gmap_view_alloc _ l DfracDiscarded
-      (t, Next (interp_type (ClassT t)))); last done.
-    apply (not_elem_of_dom (D:=gset loc)).
-    by rewrite Hdom not_elem_of_dom. }
-  iDestruct "H◯" as "#H◯".
-  iModIntro. iExists _. iFrame. iSplitR.
-  { iPureIntro. rewrite !dom_insert_L.
-    by rewrite Hdom. }
-  iModIntro. iIntros (l' t' v) "H".
-  rewrite lookup_insert_Some.
-  iDestruct "H" as %[[<- [= <- <-]]|[??]].
-  - iExists _. rewrite lookup_insert.
-    rewrite option_equivI prod_equivI /=.
-    iSplitR; first done.
-    rewrite interp_type_unfold /= /interp_class.
-    iNext. iExists _, _. by iSplitR.
-  - iDestruct ("Hm" $! l' with "[//]") as (iF) "[??]".
-    iExists _. rewrite lookup_insert_ne; last done.
-    iSplit; eauto.
-Qed.
-
 (* language statics & semantics *)
 
 Definition var := positive.
@@ -369,6 +237,8 @@ Global Instance value_trueish_decision (v : value) :
   Decision (value_trueish v).
 Proof. move: v => []; apply _. Defined.
 
+Definition heap : Type := gmap loc (tag * value).
+
 Definition tag_match (st : local_env * heap) v t :=
   ∃ l, st.1 !! v = Some (LocV l) ∧
        ∃ v, st.2 !! l = Some (t, v).
@@ -445,6 +315,15 @@ Inductive prog_eval :
       cmd_eval (∅,∅) body (le,h) →
       expr_eval le ret val →
       prog_eval (Prog body ret) val.
+
+(* heap models relation; the semantic heap does
+   not appear because it is hidden in iProp  *)
+Definition heap_models (h : heap) : iProp :=
+  ∃ (sh : gmap loc (prodO tagO (laterO interpO))),
+    own γ (gmap_view_auth 1 sh) ∗ ⌜dom (gset loc) sh = dom _ h⌝ ∗
+    □ ∀ (ℓ : loc) (t : tag) (v : value),
+      ⌜h !! ℓ = Some (t, v)⌝ -∗
+        ∃ (iF : interp), sh !! ℓ ≡ Some (t, Next iF) ∗ ▷ iF v.
 
 Definition interp_local_tys
     (lty : local_tys) (le : local_env) : iProp :=
