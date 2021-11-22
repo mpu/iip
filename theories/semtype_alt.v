@@ -719,7 +719,8 @@ Definition one_shot_loop_sh : stringmap (laterO (sem_typeO Σ)) :=
 Example one_shot_loop (h : heap) (new : loc):
   h !! new = None →
   heap_models γ h -∗ |==>
-      heap_models γ (<[ new := ("D", {[ "foo" := IntV 0; "rec" := LocV new]}) ]> h).
+      heap_models γ (<[ new := ("D", {[ "foo" := IntV 0; "rec" := LocV new]}) ]> h) ∗
+      sem_heap_mapsto new "D" one_shot_loop_sh.
 Proof.
   move=> Hl. iIntros "Hh".
   iDestruct "Hh" as (sh) "[H● [%Hdom #Hm]]".
@@ -728,7 +729,9 @@ Proof.
     apply (not_elem_of_dom (D:=gset loc)).
     by rewrite Hdom not_elem_of_dom. }
   iDestruct "H◯" as "#H◯".
-  iModIntro. iExists _. iFrame. iSplitR.
+  iModIntro.
+  iSplit; last done.
+  iExists _. iFrame. iSplitR.
   { iPureIntro. rewrite !dom_insert_L.
     by rewrite Hdom. }
   iModIntro. iIntros (l' t' v) "H".
