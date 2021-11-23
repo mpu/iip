@@ -1,4 +1,4 @@
-Axiom loc num fname tag: Type.
+Axiom loc num fname tag tvar: Type.
 
 Axiom dict: forall (K V:Type), Type.
 Axiom get: forall {K V} (d:dict K V), K -> option V.
@@ -15,16 +15,19 @@ Record obj :=
 
 Definition heap := dict loc obj.
 
+Definition semtype := heap -> value -> Prop.
 
 Inductive typ :=
 | TNum
+| TVar (x:tvar) (* type variable in generic def *)
 | TUnion (typ1 typ2 : typ)
 | TClass (t: tag).
 
 Record class_decl :=
   mk_cl {
       cl_parent: option tag;
-      cl_fields: dict fname typ
+      cl_fields: dict fname typ;
+      cl_params: list tvar; (* non empty only for generics *)
     }.
 
 Definition prog := dict tag class_decl.
@@ -58,17 +61,22 @@ Inductive inherited_fields: tag -> fname -> typ -> Prop :=
   inherited_fields B f ft ->
   inherited_fields A f ft.
 
-Inductive interp: typ -> heap -> value -> Prop :=
+Inductive interp (tenv:dict tvar semtype) : typ -> semtype :=
 | interp_TNum h n:
-  interp TNum h (Num n)
+  interp tenv TNum h (Num n)
          
 | interp_Tunion typ1 typ2 h v:
-  (interp typ1 h v \/ interp typ2 h v) ->
-  interp (TUnion typ1 typ2) h v
+  (interp tenv typ1 h v \/ interp tenv typ2 h v) ->
+  interp tenv (TUnion typ1 typ2) h v
          
 | interp_TClass_null t h:
-  interp (TClass t) h Null
+  interp tenv (TClass t) h Null
 
+| interp_TVar X ST h v:
+  get tenv X = Some ST ->
+  ST h v ->
+  interp tenv (TVar X) h v
+         
 | interp_TClass_obj t_dyn A cl h l o:
   get p A = Some cl ->
   get h l = Some o ->
@@ -76,8 +84,8 @@ Inductive interp: typ -> heap -> value -> Prop :=
   (t_dyn = A \/ inherits t_dyn A) ->
   (forall f tf,
       inherited_fields A f tf ->
-      exists v, get o.(obj_fields) f = Some v /\ interp tf h v) ->
-  interp (TClass A) h (Loc l).
+      exists v, get o.(obj_fields) f = Some v /\ interp tenv tf h v) ->
+  interp tenv (TClass A) h (Loc l).
 
 Inductive subtype : typ -> typ -> Prop :=
 | subtype_refl A:
@@ -97,9 +105,9 @@ Ltac inv H := inversion H; clear H; subst.
 Lemma subtype_implies_inclusion:
   forall typ1 typ2,
     subtype typ1 typ2 ->
-    forall h v, interp typ1 h v -> interp typ2 h v.
+    forall tenv h v, interp tenv typ1 h v -> interp tenv typ2 h v.
 Proof.
-  induction 1; intros h v HI.
+  induction 1; intros tenv h v HI.
   - assumption.
   - inv HI; try constructor.
     edestruct inherits_right_exist_class as (clB, HclB); eauto.
