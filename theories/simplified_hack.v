@@ -5,7 +5,7 @@ Axiom get: forall {K V} (d:dict K V), K -> option V.
 Axiom set: forall {K V} (d:dict K V), K -> V -> dict K V.
 
 Inductive value :=
-  | Null | Num (n:num) | Loc (l:loc).
+| Null | Num (n:num) | Loc (l:loc).
 
 Record obj :=
   mk_obj
@@ -63,23 +63,40 @@ Inductive inherited_fields: tag -> fname -> typ -> Prop :=
   inherited_fields B f ft ->
   inherited_fields A f ft.
 
-Inductive interp (tenv:dict tvar semtype) : typ -> semtype :=
-| interp_TNum h n:
-  interp tenv TNum h (Num n)
-         
-| interp_Tunion typ1 typ2 h v:
-  (interp tenv typ1 h v \/ interp tenv typ2 h v) ->
-  interp tenv (TUnion typ1 typ2) h v
-         
-| interp_TClass_null t h:
-  interp tenv (TClass t) h Null
+Inductive subtype : typ -> typ -> Prop :=
+| subtype_refl A:
+  subtype A A
+| sutype_inherits A B:
+  inherits A B ->
+  subtype (TClass A) (TClass B)
+| subtype_union_left A B C:
+  subtype A B ->
+  subtype A (TUnion B C)
+| subtype_union_right A B C:
+  subtype A C ->
+  subtype A (TUnion B C).
 
-| interp_TVar X ST h v:
-  get tenv X = Some ST ->
-  ST h v ->
-  interp tenv (TVar X) h v
+Ltac inv H := inversion H; clear H; subst.
 
-(*         
+Module InductiveDefs.
+  
+  Inductive interp (tenv:dict tvar semtype) : typ -> semtype :=
+  | interp_TNum h n:
+    interp tenv TNum h (Num n)
+           
+  | interp_Tunion typ1 typ2 h v:
+    (interp tenv typ1 h v \/ interp tenv typ2 h v) ->
+    interp tenv (TUnion typ1 typ2) h v
+           
+  | interp_TClass_null t h:
+    interp tenv (TClass t) h Null
+
+  | interp_TVar X ST h v:
+    get tenv X = Some ST ->
+    ST h v ->
+    interp tenv (TVar X) h v
+
+  (*         
 | interp_TApp typ1 X typ2 h v:
   interp (set tenv X (interp tenv typ2)) typ1 h v ->
   interp tenv (TApp typ1 X typ2) h v
@@ -88,49 +105,81 @@ Error: Non strictly positive occurrence of "interp" in
  "forall (typ1 : typ) (X : tvar) (typ2 : typ) (h : heap) (v : value),
   interp (set tenv X (interp tenv typ2)) typ1 h v ->
   interp tenv (TApp typ1 X typ2) h v".
-*)
-         
-| interp_TClass_obj t_dyn A cl h l o:
-  get p A = Some cl ->
-  get h l = Some o ->
-  o.(obj_type) = t_dyn ->
-  (t_dyn = A \/ inherits t_dyn A) ->
-  (forall f tf,
-      inherited_fields A f tf ->
-      exists v, get o.(obj_fields) f = Some v /\ interp tenv tf h v) ->
-  interp tenv (TClass A) h (Loc l).
+   *)
+           
+  | interp_TClass_obj t_dyn A cl h l o:
+    get p A = Some cl ->
+    get h l = Some o ->
+    o.(obj_type) = t_dyn ->
+    (t_dyn = A \/ inherits t_dyn A) ->
+    (forall f tf,
+        inherited_fields A f tf ->
+        exists v, get o.(obj_fields) f = Some v /\ interp tenv tf h v) ->
+    interp tenv (TClass A) h (Loc l).
 
-Inductive subtype : typ -> typ -> Prop :=
-| subtype_refl A:
-  subtype A A
-| sutype_inherits A B:
-  inherits A B ->
-  subtype (TClass A) (TClass B)
-| subtype_union_left A B C:
-    subtype A B ->
-    subtype A (TUnion B C)
-| subtype_union_right A B C:
-    subtype A C ->
-    subtype A (TUnion B C).
+  Lemma subtype_implies_inclusion:
+    forall typ1 typ2,
+      subtype typ1 typ2 ->
+      forall tenv h v, interp tenv typ1 h v -> interp tenv typ2 h v.
+  Proof.
+    induction 1; intros tenv h v HI.
+    - assumption.
+    - inv HI; try constructor.
+      edestruct inherits_right_exist_class as (clB, HclB); eauto.
+      econstructor; eauto.
+      + destruct H4; subst; auto.
+        right; eapply inherits_trans; eauto.
+      + intros f tf Hinh.
+        apply H5.
+        eapply inherited_fields_parents; eauto.
+    - constructor; eauto.
+    - constructor; eauto.
+  Qed.
 
-Ltac inv H := inversion H; clear H; subst.
+End InductiveDefs.
 
-Lemma subtype_implies_inclusion:
-  forall typ1 typ2,
-    subtype typ1 typ2 ->
-    forall tenv h v, interp tenv typ1 h v -> interp tenv typ2 h v.
-Proof.
-  induction 1; intros tenv h v HI.
-  - assumption.
-  - inv HI; try constructor.
-    edestruct inherits_right_exist_class as (clB, HclB); eauto.
-    econstructor; eauto.
-    + destruct H4; subst; auto.
-      right; eapply inherits_trans; eauto.
-    + intros f tf Hinh.
-      apply H5.
-      eapply inherited_fields_parents; eauto.
-  - constructor; eauto.
-  - constructor; eauto.
-Qed.
+
+Module StepIndexedFixpoint.
+
+  Fixpoint interp (tenv:dict tvar semtype) (n:nat) (t:typ) : semtype :=
+    match n with
+    | O => fun h v => True
+    | S k => fun h v =>
+        match t with
+        | TNum =>
+            match v with
+            | Num _ => True
+            | _ => False
+            end
+        | TUnion typ1 typ2 =>
+            interp tenv k typ1 h v \/ interp tenv k typ2 h v
+        | TClass A =>
+            match v with
+            | Null => True
+            | Loc l =>
+                match get p A, get h l with
+                | Some cl, Some o => 
+                    (let t_dyn := o.(obj_type) in
+                     t_dyn = A \/ inherits t_dyn A)
+                    /\
+                      (forall f tf,
+                          inherited_fields A f tf ->
+                          exists v, get o.(obj_fields) f = Some v
+                                    /\ interp tenv k tf h v) 
+                | _, _ => False
+                end
+            | _ => False
+            end
+        | TVar X =>
+            match get tenv X with
+            | Some ST =>
+                ST h v
+            | None => False
+            end
+        | TApp typ1 X typ2 =>
+            interp (set tenv X (interp tenv k typ2)) k typ1 h v 
+        end
+  end.
+
+End StepIndexedFixpoint.
 
