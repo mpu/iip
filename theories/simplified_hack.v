@@ -2,6 +2,7 @@ Axiom loc num fname tag tvar: Type.
 
 Axiom dict: forall (K V:Type), Type.
 Axiom get: forall {K V} (d:dict K V), K -> option V.
+Axiom set: forall {K V} (d:dict K V), K -> V -> dict K V.
 
 Inductive value :=
   | Null | Num (n:num) | Loc (l:loc).
@@ -20,7 +21,8 @@ Definition semtype := heap -> value -> Prop.
 Inductive typ :=
 | TNum
 | TVar (x:tvar) (* type variable in generic def *)
-| TUnion (typ1 typ2 : typ)
+| TApp (typ1: typ) (X: tvar) (typ2: typ)
+| TUnion (typ1 typ2: typ)
 | TClass (t: tag).
 
 Record class_decl :=
@@ -76,6 +78,17 @@ Inductive interp (tenv:dict tvar semtype) : typ -> semtype :=
   get tenv X = Some ST ->
   ST h v ->
   interp tenv (TVar X) h v
+
+(*         
+| interp_TApp typ1 X typ2 h v:
+  interp (set tenv X (interp tenv typ2)) typ1 h v ->
+  interp tenv (TApp typ1 X typ2) h v
+
+Error: Non strictly positive occurrence of "interp" in
+ "forall (typ1 : typ) (X : tvar) (typ2 : typ) (h : heap) (v : value),
+  interp (set tenv X (interp tenv typ2)) typ1 h v ->
+  interp tenv (TApp typ1 X typ2) h v".
+*)
          
 | interp_TClass_obj t_dyn A cl h l o:
   get p A = Some cl ->
