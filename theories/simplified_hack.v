@@ -1,8 +1,12 @@
 Axiom loc num fname tag tvar: Type.
 
+Axiom eq_tvar: forall (X Y:tvar), {X=Y}+{X<>Y}.
+
 Axiom dict: forall (K V:Type), Type.
 Axiom get: forall {K V} (d:dict K V), K -> option V.
 Axiom set: forall {K V} (d:dict K V), K -> V -> dict K V.
+Axiom get_set_tvar: forall V (X Y:tvar) (v:V) d,
+    get (set d X v) Y = if eq_tvar X Y then Some v else get d Y.
 
 Inductive value :=
 | Null | Num (n:num) | Loc (l:loc).
@@ -181,5 +185,85 @@ Module StepIndexedFixpoint.
         end
   end.
 
+  Definition tenv_order (tenv1 tenv2: dict tvar semtype) : Prop :=
+    forall X ST1,
+      get tenv1 X = Some ST1 ->
+      exists ST2, get tenv2 X = Some ST2 /\
+                    forall h v, ST1 h v -> ST2 h v.
+  
+  Lemma step_index_succ_aux: forall n tenv1 tenv2 t h v,
+      tenv_order tenv1 tenv2 ->
+      interp tenv1 (S n) t h v ->
+      interp tenv2 n t h v.
+  Proof.
+    induction n; intros tenv1 tenv2 t h v Ho.
+    - simpl; trivial.
+    - remember (S n) as k eqn:Hk.
+      intros H; rewrite Hk.
+      simpl in *.
+      repeat match goal with
+             [ |- context[match ?x with | _ => _ end] ] =>
+               let h := fresh in destruct x eqn:h
+             end; auto.
+      + unfold tenv_order in *.
+        destruct (get tenv1 x) eqn:Henv1; try (elim H; fail).
+        edestruct Ho as (s1 & T1 & T2); eauto.
+        assert (s=s1) by congruence; subst.
+        eauto.
+      + destruct (get tenv1 x) eqn:Henv1; try (elim H; fail).
+        edestruct Ho as (s1 & T1 & T2); eauto.
+        congruence.
+      + apply IHn with(2:=H); auto.
+        intros Y ST1.
+        rewrite get_set_tvar.
+        destruct eq_tvar.
+        * intros T; inv T.
+          econstructor; rewrite get_set_tvar; destruct eq_tvar; try congruence.
+          split; eauto.
+        * intros T.
+          edestruct Ho as (ST2 & S1 & S2); eauto.
+          exists ST2; split; eauto.
+          rewrite get_set_tvar; destruct eq_tvar; congruence.
+      + intuition eauto.
+      + destruct H; split; auto.
+        intros f tf Hi.
+        edestruct H4 as (v' & V1 & V2); eauto.
+  Qed.
+
+
+  Lemma step_index_succ: forall n tenv t h v,
+      interp tenv (S n) t h v ->
+      interp tenv n t h v.
+  Proof.
+    intros n tenv t h v H.
+    apply step_index_succ_aux with tenv; auto.
+    intro; eauto.
+  Qed.
+  Hint Resolve step_index_succ.
+  
+  Lemma subtype_implies_inclusion:
+    forall typ1 typ2,
+      subtype typ1 typ2 ->
+      forall n tenv h v, interp tenv n typ1 h v -> interp tenv n typ2 h v.
+  Proof.
+    induction 1; (destruct n; [auto|intros tenv h v]).
+    - intro; assumption.
+    - destruct v; auto.
+      simpl.
+      case_eq (get p A); [intros cl Hcl|intuition;fail].
+      case_eq (get h l); [intros o Ho|intuition;fail].
+      intros (Hi1, Hi2).
+      edestruct inherits_right_exist_class as (clB, HclB); eauto;
+        rewrite HclB.
+      split.
+      + destruct Hi1; subst; auto.
+        right; eapply inherits_trans; eauto.
+      + intros f tf Hinh.
+        apply Hi2.
+        eapply inherited_fields_parents; eauto.
+    - intros; simpl; auto.
+    - intros; simpl; auto.
+  Qed.
+  
 End StepIndexedFixpoint.
 
