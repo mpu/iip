@@ -277,13 +277,25 @@ Definition interp_class (cname : tag) (rec : ty_interpO) : interp :=
     ⌜w = LocV ℓ ∧ inherits t cname ∧ has_fields t fields⌝ ∗
     sem_heap_mapsto ℓ t (interp_tys_next rec fields))%I.
 
+Definition interp_app (tyenv: gmap tvar interp) (go: gmap tvar interp → lang_ty → interp)
+   (ty:lang_ty) (tv: tvar) (targ: lang_ty) : interp :=
+   go (<[tv := go tyenv targ]>tyenv) ty
+.
+
+Definition interp_var (tyenv: gmap tvar interp) (tv: tvar) : interp :=
+  match tyenv !! tv with
+  | Some T => T
+  | None => λ(_: value), False%I
+  end
+.
+
 (* we use a blend of Coq/Iris recursion, the
    Coq recursion lets us handle simple structural
    cases, and we use Iris' recursion to deal with
    the more complicated case of class types *)
-Definition interp_type_pre (tyenv: stringmap interp) (rec : ty_interpO) : ty_interpO :=
+Definition interp_type_pre (tyenv: gmap tvar interp) (rec : ty_interpO) : ty_interpO :=
   λ (typ : lang_ty),
-    (fix go (tyenv: stringmap interp) (typ : lang_ty) : interp :=
+    (fix go (tyenv: gmap tvar interp) (typ : lang_ty) : interp :=
        match typ with
        | IntT => interp_int
        | BoolT => interp_bool
@@ -294,13 +306,8 @@ Definition interp_type_pre (tyenv: stringmap interp) (rec : ty_interpO) : ty_int
        | NonNullT => interp_nonnull
        | UnionT A B => interp_union (go tyenv A) (go tyenv B)
        | InterT A B => interp_inter (go tyenv A) (go tyenv B)
-       | AppT ty tv targ =>
-           go (<[tv := go tyenv targ]>tyenv) ty 
-       | VarT tv =>
-           match tyenv !! tv with
-           | Some T => T
-           | None => λ(_:value), False%I
-           end
+       | AppT ty tv targ => interp_app tyenv go ty tv targ
+       | VarT tv => interp_var tyenv tv
        end) tyenv typ.
 
 Section gmap.
@@ -336,7 +343,8 @@ Proof.
   - apply H.
     f_equiv; first by apply H0.
     done.
-  - destruct (tyenv1 !! tv) as [ a1 | ] eqn:h1.
+  - rewrite /interp_var.
+    destruct (tyenv1 !! tv) as [ a1 | ] eqn:h1.
     + destruct (tyenv2 !! tv) as [a2 | ] eqn:h2.
       * move:(h tv); rewrite h1 h2.
         by move/Some_dist_inj. 
@@ -388,10 +396,15 @@ by destruct n.
   + by apply H.
 Qed.
 
+Record TyEnv := {
+  tvmap :> gmap tvar interp;
+  _ : ∀ tv iF v, tvmap !! tv = Some iF → Persistent (iF v)
+  }
+.
 (* the interpretation of types can now be
    defined as a fixpoint (because class types
    can be (mutually) recursive) *)
-Definition interp_type tyenv := fixpoint (interp_type_pre tyenv).
+Definition interp_type (tyenv: TyEnv) := fixpoint (interp_type_pre tyenv).
 
 Lemma interp_type_unfold tyenv (ty : lang_ty) (v : value) :
   interp_type tyenv ty v ⊣⊢ interp_type_pre tyenv (interp_type tyenv) ty v.
@@ -415,18 +428,17 @@ Proof.
     destruct hin as [[<- <-] | [hne hin]]; first by apply htarg.
     eapply htyenv.
     by apply hin.
-  - simpl.
-    destruct (tyenv !! tv) as [w | ] eqn:hw; last by apply _.
+  - rewrite /= /interp_var.
+    destruct (tyenv !! tv) as [w | ] eqn:hw; rewrite hw; last by apply _.
     eapply htyenv.
     by apply hw.
 Qed.
 
 (* #hyp *)
-Global Instance interp_type_persistent : forall tyenv
-  (_: ∀ tv iF v, tyenv !! tv = Some iF → Persistent (iF v)) t v,
+Global Instance interp_type_persistent : forall tyenv t v,
   Persistent (interp_type tyenv t v).
 Proof.
-  move => tyenv htyenv.
+  move => [tyenv htyenv].
   rewrite /interp_type.
   apply fixpoint_ind.
   - move => x y hxy h t v.
@@ -460,7 +472,7 @@ Proof.
 Qed.
  *)
 
-Lemma dom_interp_tys_next (tyenv :stringmap interp) fields:
+Lemma dom_interp_tys_next (tyenv: TyEnv) fields:
   dom stringset (interp_tys_next (interp_type tyenv) fields) ≡ dom _ fields.
 Proof. by rewrite /interp_tys_next /interp_ty_next dom_fmap. Qed.
 
@@ -510,24 +522,24 @@ by eauto.
 Qed.
 
 
-(* TODO: refactor interp_pre so we can rewrite interp_type_unfold *)
-(*
 (* A <: B -> ΦA ⊂ ΦB *)
-Theorem subtype_is_inclusion:
-  forall A B, A <: B ->
-  forall v tyenv,
-  interp_type tyenv A v -∗ interp_type tyenv B v.
+Theorem subtype_is_inclusion_aux:
+  forall A B, A <: B →
+  forall v tyenv tyenv',
+  (forall tv iF, tyenv !! tv = Some iF → forall v, iF v -∗ interp_mixed v) →
+  interp_type_pre tyenv (interp_type tyenv') A v -∗
+  interp_type_pre tyenv (interp_type tyenv') B v.
 Proof.
 induction 1 as [A | A B hext | | | | A | A B| A B | A B C h0 hi0 h1 hi1
-  | A B | A B | A B C h0 hi0 h1 hi1 | A | A B C h0 hi0 h1 hi1 ]; move => v;
-  rewrite !interp_type_unfold /=.
+  | A B | A B | A B C h0 hi0 h1 hi1 | A | A B C h0 hi0 h1 hi1 ];
+      move => v tyenv tyenv' htyenv /=.
 - rewrite /interp_mixed.
-  elim: A => /=.
-  + iIntros "h"; by repeat iLeft.
-  + iIntros "h"; by iLeft; iRight; iLeft.
-  + by rewrite /interp_nothing; iIntros "h".
+  elim: A v tyenv tyenv' htyenv => /=.
+  + move => v _ _ _; iIntros "h"; by repeat iLeft.
+  + move => v _ _ _; iIntros "h"; by iLeft; iRight; iLeft.
+  + move => v _ _ _; by rewrite /interp_nothing; iIntros "h".
   + done.
-  + rewrite /interp_class => cname.
+  + rewrite /interp_class => v cname tyenv tyenv' _.
     iIntros "h".
     iDestruct "h" as (ℓ t fields) "[%h0 h1]".
     destruct h0 as [-> [hext hfields]].
@@ -535,18 +547,29 @@ induction 1 as [A | A B hext | | | | A | A B| A B | A B C h0 hi0 h1 hi1
     iRight.
     iRight.
     by iExists _, _, _; iFrame.
-  + iIntros "h"; by iRight.
-  + by iIntros "h"; iLeft.
-  + move => s hs t ht.
+  + move => v _ _ _; iIntros "h"; by iRight.
+  + move => v _ _ _; by iIntros "h"; iLeft.
+  + move => s hs t ht v tyenv tyenv' htyenv.
     rewrite /interp_union.
     iIntros "h".
-    iDestruct "h" as "[ h | h ]".
-    by iApply hs.
+    iDestruct "h" as "[ h | h ]"; first by iApply hs.
     by iApply ht.
-  + move => s hs t ht.
+  + move => s hs t ht v tyenv tyenv' htyenv.
     rewrite /interp_inter.
     iIntros "h".
     iDestruct "h" as "[? _]"; by iApply hs.
+  + move => ty hty tv targ htarg v tyenv tyenv' htyenv.
+    rewrite /interp_app.
+    iIntros "h".
+    iApply hty; last by iApply "h".
+    rewrite /interp_mixed => k iF hk w; iIntros "hiF".
+    rewrite -> lookup_insert_Some in hk.
+    destruct hk as [[<- <-] | [hne hin]]; first by iApply htarg.
+    by iApply htyenv.
+  + rewrite /interp_var => tv v tyenv _ htyenv.
+    destruct (tyenv !! tv) as [ty | ] eqn:hty; last by iIntros.
+    iIntros "h".
+    by iApply htyenv.
 - rewrite /interp_class.
   iIntros "h".
   iDestruct "h" as (ℓ t fields) "[%h hsem]".
@@ -571,41 +594,33 @@ induction 1 as [A | A B hext | | | | A | A B| A B | A B C h0 hi0 h1 hi1
 - rewrite /interp_union.
   by iIntros "h"; iRight.
 - rewrite /interp_union.
-  rewrite -!interp_type_unfold.
   iIntros "[h | h]"; first by iApply hi0.
   by iApply hi1.
 - rewrite /interp_inter.
-  rewrite -!interp_type_unfold.
   by iIntros "[? _]".
 - rewrite /interp_inter.
-  rewrite -!interp_type_unfold.
   by iIntros "[_ ?]".
 - rewrite /interp_inter.
-  rewrite -!interp_type_unfold.
   iIntros "h".
   iSplit; first by iApply hi0.
   by iApply hi1.
-- by rewrite -!interp_type_unfold.
-- rewrite -!interp_type_unfold.
-  iIntros "h".
-  iApply hi1.
+- done.
+- iIntros "h".
+  iApply hi1; first done.
   by iApply hi0.
 Qed.
 
-Lemma inherits_is_sub: forall C D, inherits D C -> (ClassT D) <: (ClassT C).
-Proof.  by eauto. Qed.
-
-Lemma interp_type_inherits (l : loc) (C D: tag):
-  inherits D C ->
-  interp_type (ClassT D) (LocV l) -∗
-  interp_type (ClassT C) (LocV l).
+Theorem subtype_is_inclusion:
+  forall A B, A <: B →
+  forall v (tyenv: TyEnv),
+  (forall tv iF, tvmap tyenv !! tv = Some iF → forall v, iF v -∗ interp_mixed v) →
+  interp_type tyenv A v -∗ interp_type tyenv B v.
 Proof.
-move => hDsubC.
-iIntros "h".
-iApply subtype_is_inclusion; first by apply inherits_is_sub.
-done.
+  move => A B hAB v tyenv htyenv.
+  rewrite !interp_type_unfold.
+  by iApply subtype_is_inclusion_aux.
 Qed.
- *)
+
 (* language statics & semantics *)
 
 Definition local_tys := stringmap lang_ty.
@@ -905,15 +920,15 @@ Proof.
   - rewrite lookup_insert_ne; last done. by iApply "Hi".
 Qed.
 
-Lemma heap_models_lookup l h A vs t :
+Lemma heap_models_lookup tyenv l h A vs t :
   h !! l = Some (t, vs) →
   heap_models h -∗
-  interp_type (ClassT A) (LocV l) -∗
+  interp_type tyenv (ClassT A) (LocV l) -∗
   ∃ fields, heap_models h ∗
     ⌜inherits t A ∧ has_fields t fields⌝ ∗
     ∀ f fty, ⌜fields !! f = Some fty⌝ → 
     ∃ v, ⌜vs !! f = Some v⌝ ∗
-    ▷ interp_type fty v.
+    ▷ interp_type tyenv fty v.
 Proof.
   move => hheap.
   iIntros "hmodels hl".
@@ -977,14 +992,14 @@ Proof.
     by iApply "h".
 Qed.
 
-Lemma heap_models_update h l t t0 vs f v fty:
+Lemma heap_models_update tyenv h l t t0 vs f v fty:
   wf_cdefs Δ ->
   h !! l = Some (t, vs) ->
   has_field f fty t0 ->
   inherits t t0 ->
   heap_models h -∗
-  interp_type (ClassT t0) (LocV l) -∗
-  interp_type fty v -∗
+  interp_type tyenv (ClassT t0) (LocV l) -∗
+  interp_type tyenv fty v -∗
   heap_models (<[l:=(t, (<[f := v]>vs))]> h).
 Proof.
   move => wfΔ hheap hf hinherits.
@@ -1057,13 +1072,13 @@ Proof.
   by iApply HI.
 Qed.
 
-Lemma cmd_adequacy lty lty' st cmd st' :
+Lemma cmd_adequacy tyenv lty lty' st cmd st' :
   wf_cdefs Δ →
   cmd_eval st cmd st' →
   cmd_has_ty lty cmd lty' →
   ∃ n,
-    heap_models st.2 ∗ interp_local_tys lty st.1 -∗ |=▷^n
-    heap_models st'.2 ∗ interp_local_tys lty' st'.1.
+    heap_models st.2 ∗ interp_local_tys tyenv lty st.1 -∗ |=▷^n
+    heap_models st'.2 ∗ interp_local_tys tyenv lty' st'.1.
 Proof.
   move=> wfΔ E. move: lty lty'. elim: E.
   - move => ? lty lty' hty.
@@ -1085,11 +1100,11 @@ Proof.
     iDestruct "Hdom" as %Hdom.
     iMod (own_update with "H●") as "[H● H◯]".
     { apply (gmap_view_alloc _ new DfracDiscarded
-        (t, interp_tys_next interp_type fields)); last done.
+        (t, interp_tys_next (interp_type tyenv) fields)); last done.
       apply (not_elem_of_dom (D:=gset loc)).
       by rewrite Hdom not_elem_of_dom. }
     iIntros "!> !>". iDestruct "H◯" as "#H◯".
-    iAssert (interp_type (ClassT t) (LocV new))
+    iAssert (interp_type tyenv (ClassT t) (LocV new))
       with "[]" as "#Hl".
     { rewrite interp_type_unfold /=.
       iExists _, _, _. by iSplit. }
@@ -1111,7 +1126,7 @@ Proof.
       iIntros (f iF) "hiF".
       iAssert (⌜f ∈ dom stringset fields⌝)%I as "%hf".
       {
-        rewrite -dom_interp_tys_next elem_of_dom.
+        rewrite -(dom_interp_tys_next tyenv) elem_of_dom.
         rewrite /interp_tys_next /interp_ty_next.
         rewrite !lookup_fmap.
         by iRewrite "hiF".
@@ -1143,7 +1158,7 @@ Proof.
       rewrite discrete_fun_equivI.
       iSpecialize ("hiF" $! v0).
       iRewrite -"hiF".
-      by iDestruct (expr_adequacy a0 with "Hle") as "#Ha0".
+      by iDestruct (expr_adequacy tyenv a0 with "Hle") as "#Ha0".
     + rewrite lookup_insert_ne; last done.
       by iApply "Hh".
   - move => le h hls recv name l t vs v hle hh hvs lty lty' hc.
@@ -1164,8 +1179,8 @@ Proof.
     exists 0.
     iIntros "[Hh #Hle]".
     rewrite updN_zero /=. iSplitL; last done.
-    iDestruct (expr_adequacy recv with "Hle") as "#Hrecv" => //.
-    iDestruct (expr_adequacy rhs with "Hle") as "#Hrhs" => //.
+    iDestruct (expr_adequacy tyenv recv with "Hle") as "#Hrecv" => //.
+    iDestruct (expr_adequacy tyenv rhs with "Hle") as "#Hrhs" => //.
     iDestruct (heap_models_lookup with "Hh Hrecv") as (fields) "(Hh&Ht&?)"; first done.
     iDestruct "Ht" as %[? ?].
     by iApply (heap_models_update with "Hh").
@@ -1206,3 +1221,5 @@ Admitted.
 Global Instance gmap_dom_ne n `{Countable K} {A : ofe}:
   Proper ((≡{n}@{gmap K A}≡) ==> (=)) (dom (gset K)).
 Proof. intros m1 m2 Hm. apply set_eq=> k. by rewrite !elem_of_dom Hm. Qed.
+
+Print Assumptions cmd_adequacy.
