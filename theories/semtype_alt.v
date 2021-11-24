@@ -37,6 +37,8 @@ Class sem_heapG (Σ : gFunctors) : Set := SemHeapG {
   sem_heapG_heap :> inG Σ (gmap_viewR loc (prodO tagO (gmapO string (laterO (sem_typeO Σ)))));
 }.
 
+Definition tvar := string.
+
 Inductive lang_ty :=
   | IntT
   | BoolT
@@ -47,6 +49,8 @@ Inductive lang_ty :=
   | NonNullT
   | UnionT (s t: lang_ty)
   | InterT (s t: lang_ty)
+  | AppT (ty: lang_ty) (tv: tvar) (targ: lang_ty)
+  | VarT (tv: tvar)
 .
 Canonical Structure lang_tyO : ofe := leibnizO lang_ty.
 
@@ -87,6 +91,7 @@ Record methodDef := {
 Record classDef := {
   classname: tag;
   superclass: option tag;
+  classgenerics: list tvar; (* TODO: add constraints *)
   classfields : stringmap lang_ty;
   classmethods : stringmap methodDef;
 }.
@@ -276,9 +281,9 @@ Definition interp_class (cname : tag) (rec : ty_interpO) : interp :=
    Coq recursion lets us handle simple structural
    cases, and we use Iris' recursion to deal with
    the more complicated case of class types *)
-Definition interp_type_pre (rec : ty_interpO) : ty_interpO :=
+Definition interp_type_pre (tyenv: stringmap interp) (rec : ty_interpO) : ty_interpO :=
   λ (typ : lang_ty),
-    (fix go (typ : lang_ty) : interp :=
+    (fix go (tyenv: stringmap interp) (typ : lang_ty) : interp :=
        match typ with
        | IntT => interp_int
        | BoolT => interp_bool
@@ -287,9 +292,16 @@ Definition interp_type_pre (rec : ty_interpO) : ty_interpO :=
        | ClassT t => interp_class t rec
        | NullT => interp_null
        | NonNullT => interp_nonnull
-       | UnionT A B => interp_union (go A) (go B)
-       | InterT A B => interp_inter (go A) (go B)
-       end) typ.
+       | UnionT A B => interp_union (go tyenv A) (go tyenv B)
+       | InterT A B => interp_inter (go tyenv A) (go tyenv B)
+       | AppT ty tv targ =>
+           go (<[tv := go tyenv targ]>tyenv) ty 
+       | VarT tv =>
+           match tyenv !! tv with
+           | Some T => T
+           | None => λ(_:value), False%I
+           end
+       end) tyenv typ.
 
 Section gmap.
   Context {K: Type} {HKeqdec: EqDecision K} {HKcount: Countable K}.
@@ -305,18 +317,54 @@ Section gmap.
 	Qed.
 End gmap.
 
+Lemma interp_type_pre_contractive_env tyenv1 tyenv2 t:
+  forall n,
+  tyenv1 ≡{n}≡ tyenv2 →
+  interp_type_pre tyenv1 t ≡{n}≡ interp_type_pre tyenv2 t.
+Proof.
+  move => n h ty.
+  move: tyenv1 tyenv2 n h.
+  elim : ty; intros => //=.
+  - rewrite /interp_union => v.
+    f_equiv.
+    + by rewrite (H tyenv1 tyenv2 n h v).
+    + by rewrite (H0 tyenv1 tyenv2 n h v).
+  - rewrite /interp_inter => v.
+    f_equiv.
+    + by rewrite (H tyenv1 tyenv2 n h v).
+    + by rewrite (H0 tyenv1 tyenv2 n h v).
+  - apply H.
+    f_equiv; first by apply H0.
+    done.
+  - destruct (tyenv1 !! tv) as [ a1 | ] eqn:h1.
+    + destruct (tyenv2 !! tv) as [a2 | ] eqn:h2.
+      * move:(h tv); rewrite h1 h2.
+        by move/Some_dist_inj. 
+      * move:(h tv); rewrite h1 h2.
+        by inversion 1.
+    + destruct (tyenv2 !! tv) as [a2 | ] eqn:h2; last by done.
+      move:(h tv); rewrite h1 h2.
+      by inversion 1.
+Qed.
+
 (* we cannot use solve_contractive out of the box because of
  * the 'fix' combinator above
  *)
-Local Instance interp_type_pre_contractive :
-  Contractive interp_type_pre.
+Local Instance interp_type_pre_contractive tyenv:
+  Contractive (interp_type_pre tyenv).
 Proof.
-move => n ???.
-elim => * //=;
+move => n i1 i2 hdist.
+move => ty.
+move: tyenv.
+elim : ty; intros => //=.
+(*
     [ (* ClassT *)
     | solve_proper_core ltac:(fun _ => first [done | f_contractive | f_equiv])
     | solve_proper_core ltac:(fun _ => first [done | f_contractive | f_equiv])
+    | (* VarT *)
     ].
+ *)
+{
 move => v; rewrite /interp_class.
 do 3 (f_equiv; intro).
 do 4 f_equiv.
@@ -324,29 +372,76 @@ rewrite /interp_tys_next /interp_ty_next.
 apply gmap_fmap_ne_ext => k ty hin.
 f_contractive.
 by destruct n.
+}
+- rewrite /interp_union => v.
+  f_equiv.
+  + by rewrite (H tyenv v).
+  + by rewrite (H0 tyenv v).
+- rewrite /interp_inter => v.
+  f_equiv.
+  + by rewrite (H tyenv v).
+  + by rewrite (H0 tyenv v).
+- specialize H0 with tyenv.
+  transitivity (interp_type_pre (<[tv:=interp_type_pre tyenv i2 targ]> tyenv) i1 ty).
+  + apply interp_type_pre_contractive_env.
+    by f_equiv.
+  + by apply H.
 Qed.
 
 (* the interpretation of types can now be
    defined as a fixpoint (because class types
    can be (mutually) recursive) *)
-Definition interp_type := fixpoint interp_type_pre.
+Definition interp_type tyenv := fixpoint (interp_type_pre tyenv).
 
-Lemma interp_type_unfold (ty : lang_ty) (v : value) :
-  interp_type ty v ⊣⊢ interp_type_pre interp_type ty v.
+Lemma interp_type_unfold tyenv (ty : lang_ty) (v : value) :
+  interp_type tyenv ty v ⊣⊢ interp_type_pre tyenv (interp_type tyenv) ty v.
 Proof.
   rewrite {1}/interp_type.
-  apply (fixpoint_unfold interp_type_pre ty v).
+  apply (fixpoint_unfold (interp_type_pre tyenv) ty v).
+Qed.
+
+Lemma interp_type_pre_persistent : forall (P: ty_interpO)
+  (_: forall t v, Persistent (P t v))
+  t (tyenv:stringmap interp)  v,
+  (∀ tv iF v, tyenv !! tv = Some iF → Persistent (iF v)) →
+  Persistent (interp_type_pre tyenv P t v).
+Proof.
+  move => P hP.
+  elim => [ | | | | cname | | |s hs t ht | s hs t ht | ty hty tv targ htarg| tv] tyenv v htyenv;
+      try by apply _.
+  - simpl.
+    apply hty => tv0 iF w hin.
+    rewrite -> lookup_insert_Some in hin.
+    destruct hin as [[<- <-] | [hne hin]]; first by apply htarg.
+    eapply htyenv.
+    by apply hin.
+  - simpl.
+    destruct (tyenv !! tv) as [w | ] eqn:hw; last by apply _.
+    eapply htyenv.
+    by apply hw.
 Qed.
 
 (* #hyp *)
-Global Instance interp_type_persistent : forall t v, Persistent (interp_type t v).
+Global Instance interp_type_persistent : forall tyenv
+  (_: ∀ tv iF v, tyenv !! tv = Some iF → Persistent (iF v)) t v,
+  Persistent (interp_type tyenv t v).
 Proof.
-elim => [ | | | | cname | | |s hs t ht | s hs t ht] v;
-  rewrite interp_type_unfold //=; try by apply _.
-- rewrite /interp_union.
-  by apply bi.or_persistent; rewrite -!interp_type_unfold.
-- rewrite /interp_union.
-  by apply bi.and_persistent; rewrite -!interp_type_unfold.
+  move => tyenv htyenv.
+  rewrite /interp_type.
+  apply fixpoint_ind.
+  - move => x y hxy h t v.
+    generalize (hxy t v).
+    move => hh.
+    by rewrite <- hh.
+  - exists (λ (_: lang_ty) (_: value), True%I).
+    by apply _.
+  - move => x hx t v.
+    by apply interp_type_pre_persistent.
+  - apply limit_preserving_forall => ty.
+    apply limit_preserving_forall => v.
+    apply bi.limit_preserving_Persistent.
+    move => n x y hxy.
+    by move : (hxy ty v).
 Qed.
 
 (*
@@ -365,8 +460,8 @@ Proof.
 Qed.
  *)
 
-Lemma dom_interp_tys_next fields:
-  dom stringset (interp_tys_next interp_type fields) ≡ dom _ fields.
+Lemma dom_interp_tys_next (tyenv :stringmap interp) fields:
+  dom stringset (interp_tys_next (interp_type tyenv) fields) ≡ dom _ fields.
 Proof. by rewrite /interp_tys_next /interp_ty_next dom_fmap. Qed.
 
 Inductive subtype : lang_ty -> lang_ty -> Prop :=
@@ -415,11 +510,13 @@ by eauto.
 Qed.
 
 
+(* TODO: refactor interp_pre so we can rewrite interp_type_unfold *)
+(*
 (* A <: B -> ΦA ⊂ ΦB *)
 Theorem subtype_is_inclusion:
   forall A B, A <: B ->
-  forall v,
-  interp_type A v -∗ interp_type B v.
+  forall v tyenv,
+  interp_type tyenv A v -∗ interp_type tyenv B v.
 Proof.
 induction 1 as [A | A B hext | | | | A | A B| A B | A B C h0 hi0 h1 hi1
   | A B | A B | A B C h0 hi0 h1 hi1 | A | A B C h0 hi0 h1 hi1 ]; move => v;
@@ -508,6 +605,7 @@ iIntros "h".
 iApply subtype_is_inclusion; first by apply inherits_is_sub.
 done.
 Qed.
+ *)
 (* language statics & semantics *)
 
 Definition local_tys := stringmap lang_ty.
@@ -735,9 +833,9 @@ Definition heap_models (h : heap) : iProp :=
         sh !! ℓ ≡ Some (t, iFs) ∗ heap_models_fields iFs vs.
 
 Definition interp_local_tys
-    (lty : local_tys) (le : local_env) : iProp :=
+  tyenv (lty : local_tys) (le : local_env) : iProp :=
   (∀ v ty, ⌜lty !! v = Some ty⌝ -∗
-           ∃ val, ⌜le !! v = Some val⌝ ∗ interp_type ty val)%I.
+           ∃ val, ⌜le !! v = Some val⌝ ∗ interp_type tyenv ty val)%I.
 
 (*
 Lemma expr_typ_inv e le lty (h: heap) l t t0 vs:
@@ -757,11 +855,11 @@ Proof.
  *)
 
 
-Lemma expr_adequacy e lty le ty val :
+Lemma expr_adequacy tyenv e lty le ty val :
   expr_eval le e = Some val →
   expr_has_ty lty e ty →
-  interp_local_tys lty le -∗
-  interp_type ty val.
+  interp_local_tys tyenv lty le -∗
+  interp_type tyenv ty val.
 Proof.
   (* the language is this simple that no
      induction is necessary *)
@@ -789,16 +887,16 @@ Proof.
       destruct op; by eauto.
   - move => hle hexpr.
     inv hexpr.
-    iIntros "#Hlty".
+    iIntros "#Hlty". (* CHECKPOINT *)
     iDestruct ("Hlty" with "[//]") as (?) "[% H]".
     rewrite hle in H; injection H; intros <-; clear H.
     done.
 Qed.
 
-Lemma interp_local_tys_update v lty le ty val :
-  interp_local_tys lty le -∗
-  interp_type ty val -∗
-  interp_local_tys (<[v:=ty]>lty) (<[v:=val]>le).
+Lemma interp_local_tys_update tyenv v lty le ty val :
+  interp_local_tys tyenv lty le -∗
+  interp_type tyenv ty val -∗
+  interp_local_tys tyenv (<[v:=ty]>lty) (<[v:=val]>le).
 Proof.
   iIntros "#Hi #?". iIntros (v' ty') "H".
   rewrite lookup_insert_Some.
