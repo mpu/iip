@@ -618,10 +618,8 @@ Fixpoint expr_eval (le : local_env) (e: expr) : option value :=
 (* concrete heaps *)
 Definition heap : Type := gmap loc (tag * stringmap value).
 
-(*
 Definition map_args {A B: Type} (f: A → option  B) (m: stringmap A) : option (stringmap B) :=
-  let g (x: (string * A)) := f x.2 ≫= (fun y => mret (x.1, y)) in
-  mapM g (map_to_list m) ≫= (fun l => mret (list_to_map l))
+  guard (map_Forall (λ _ x, is_Some (f x)) m); Some (omap f m)
 .
 
 Lemma dom_map_args: forall A B (f: A → option B)
@@ -629,99 +627,29 @@ Lemma dom_map_args: forall A B (f: A → option B)
   map_args f m = Some n -> 
   dom stringset n = dom _ m.
 Proof.
-  move => A B f.
-  assert (h0: forall (l: list (string * A)) (k: list (string * B)),
-    mapM (λ x : string * A, f x.2 ≫= (λ y : B, mret (x.1, y))) l = Some k →
-    l.*1 = k.*1).
-  {
-    induction l as [ | [s0 ?] tl hi]; destruct k as [ | [s1 ?] tl'] => //.
-    - simpl.
-      destruct (f a) as [x | ] => //=.
-      by destruct mapM.
-    - simpl mapM.
-      destruct (f a) as [x | ] => //.
-      simpl mbind.
-      destruct mapM as [l | ] => //.
-      simpl mbind.
-      move => [= <- <- <-].
-      by rewrite !fmap_cons (hi l).
-  }
-  rewrite /map_args => m n h.
-  apply bind_Some in h as [l [hl h]].
-  apply h0 in hl.
+  rewrite /map_args => A B f m n h.
+  case_option_guard; last done.
   injection h; intros <-; clear h.
-  rewrite dom_list_to_map_L -hl.
-  unfold_leibniz.
-  by rewrite dom_alt.
+  rewrite -> map_Forall_lookup in H.
+  apply set_eq => x; split; move/elem_of_dom => hx; apply elem_of_dom.
+  - rewrite lookup_omap in hx.
+    destruct hx as [v hv]; by apply bind_Some in hv as [a [-> ha]].
+  - destruct hx as [v hv].
+    rewrite lookup_omap hv.
+    by apply H in hv.
 Qed.
 
-
-Lemma map_args_lookup_: forall A B (f: A → option B) (l: list (string * A)) n,
-  NoDup l.*1 →
-  map_args f (list_to_map l) = Some n →
-  forall (m: stringmap A), m = list_to_map l →
+Lemma map_args_lookup: forall A B (f: A → option B) (m: stringmap A) n,
+  map_args f m = Some n →
   forall k, n !! k = (m !! k) ≫= f.
 Proof.
-  move => A B f.
-  rewrite /map_args => l n hnodup h.
-  apply bind_Some in h as [l' [hl h]].
+  rewrite /map_args => A B f m n h k.
+  case_option_guard; last done.
   injection h; intros <-; clear h.
-  induction l as [ | [x v] tl hi]; destruct l' as [ | [y w] tl'] => //=.
-  - by move => m -> k.
-  - move => m -> k.
-    apply mapM_Some in hl.
-    apply Forall2_length in hl.
-    assert (hp: map_to_list (list_to_map ((x, v) :: tl)) ≡ₚ (x, v) :: tl) by (by apply map_to_list_to_map).
-    apply Permutation_length in hp.
-    by rewrite hl in hp.
-  - move => m -> k.
-    destruct (decide (y = k)) as [-> | hne0].
-    + rewrite lookup_insert.
-      destruct (decide (x = k)) as [-> | hne1].
-      * rewrite lookup_insert.
-        simpl in *.
-        apply mapM_Some in hl.
-
+  rewrite -> map_Forall_lookup in H.
+  by rewrite lookup_omap.
+Qed.
   
-
-
-
-
-l : list (string * B)
-hl : mapM (λ x : string * A, f x.2 ≫= (λ y : B, mret (x.1, y)))
-       (map_to_list m) = Some l
-k : string
-
-========================= (1 / 1)
-
-list_to_map l !! k = m !! k ≫= f
-
-  Search mapM mbind.
-  apply mapM_Some in hl.
-  apply elem_of_mapM in hl.
-  Check elem_of_mapM.
-  Search mapM elem_of.
-  destruct (m !! k) as [ w | ] eqn:?.
-  Search elem_of lookup.
-  apply set_eq.
-  apply mapM_Some in hl.
-  apply Forall2_same_length_lookup in hl as [? hl].
-  Search list_to_map lookup.
-  destruct (map_to_list m !!
-  Search Forall2 lookup.
-  
-
-    Search list_to_map lookup.
-    Search map_to_list empty.
-    rewrite map_to_list_empty.
-    rewrite map_to_list_empty
-  Search map_to_list lookup.
- *)
-
-Definition map_args {A B: Type} (f: A → option  B) (m: stringmap A) (n: stringmap B) :=
-  dom stringset m = dom stringset n /\
-  ∀ k a b, m !! k = Some a -> n !! k = Some b -> f a = Some b.
-
 Inductive cmd_eval:
     (local_env * heap) → cmd →
     (local_env * heap) → Prop :=
@@ -731,8 +659,7 @@ Inductive cmd_eval:
       cmd_eval (le, h) (LetC v e) (<[v:=val]> le, h)
   | NewEv: forall le h lhs new t args vargs,
       h !! new = None →
-      (* map_args (expr_eval le) args = Some vargs → *)
-      map_args (expr_eval le) args vargs →
+      map_args (expr_eval le) args = Some vargs →
       cmd_eval (le, h) (NewC lhs t args) (<[lhs := LocV new]>le, <[new := (t, vargs)]>h)
   | GetEv: forall le h lhs recv name l t vs v,
       expr_eval le recv = Some (LocV l) →
@@ -760,8 +687,7 @@ Inductive cmd_eval:
   | CallEv: forall le h h' lhs recv l t vs name args vargs cdef mdef
       run_env run_env' ret,
       expr_eval le recv = Some (LocV l) →
-      (* map_args (expr_eval le) args = Some vargs → *)
-      map_args (expr_eval le) args vargs →
+      map_args (expr_eval le) args = Some vargs →
       h !! l = Some (t, vs) →
       Δ !! t = Some cdef →
       cdef.(classmethods) !! name = Some mdef →
@@ -1079,10 +1005,10 @@ Proof.
     + iExists _. rewrite lookup_insert.
       iSplitR; first done.
       rewrite /heap_models_fields.
-      destruct hargs as [hargsdom hargs]. 
       iSplitR.
       { 
-        by rewrite dom_interp_tys_next -hargsdom H5.
+        apply dom_map_args in hargs.
+        by rewrite dom_interp_tys_next hargs H5.
       }
       iIntros (f iF) "hiF".
       iAssert (⌜f ∈ dom stringset fields⌝)%I as "%hf".
@@ -1101,14 +1027,18 @@ Proof.
       assert (h1: is_Some (vargs !! f)).
       {
         apply elem_of_dom.
-        by rewrite -hargsdom -H5.
+        apply dom_map_args in hargs.
+        by rewrite hargs -H5.
       }
       destruct h1 as [v0 hv0].
       assert (h2: is_Some (fields !! f)) by (by apply elem_of_dom).
       destruct h2 as [fty hty].
       iExists v0; iSplitR; first done.
       rewrite /interp_tys_next /interp_ty_next lookup_fmap.
-      assert (heval0: expr_eval le a0 = Some v0) by (by apply hargs with f).
+      assert (heval0: expr_eval le a0 = Some v0).
+      { rewrite (map_args_lookup _ _ _ args vargs hargs f) in hv0.
+        by rewrite ha0 in hv0.
+      }
       assert (hty0: expr_has_ty lty a0 fty) by (by apply H6 with f).
       rewrite hty /= option_equivI later_equivI.
       iNext.
