@@ -27,6 +27,7 @@ Inductive typ :=
 | TVar (x:tvar) (* type variable in generic def *)
 | TApp (typ1: typ) (X: tvar) (typ2: typ)
 | TUnion (typ1 typ2: typ)
+| Tmixed
 | TClass (t: tag).
 
 Record class_decl :=
@@ -78,7 +79,9 @@ Inductive subtype : typ -> typ -> Prop :=
   subtype A (TUnion B C)
 | subtype_union_right A B C:
   subtype A C ->
-  subtype A (TUnion B C).
+  subtype A (TUnion B C)
+| subtype_mixed A:
+  subtype A Tmixed.
 
 Ltac inv H := inversion H; clear H; subst.
 
@@ -119,7 +122,13 @@ Error: Non strictly positive occurrence of "interp" in
     (forall f tf,
         inherited_fields A f tf ->
         exists v, get o.(obj_fields) f = Some v /\ interp tenv tf h v) ->
-    interp tenv (TClass A) h (Loc l).
+    interp tenv (TClass A) h (Loc l)
+
+  | interp_Tmixed A h v:
+    A <> Tmixed ->
+    interp tenv A h v ->
+    interp tenv Tmixed h v
+  .
 
   Lemma subtype_implies_inclusion:
     forall typ1 typ2,
@@ -137,7 +146,8 @@ Error: Non strictly positive occurrence of "interp" in
         apply H5.
         eapply inherited_fields_parents; eauto.
     - constructor; eauto.
-    - constructor; eauto.
+    - constructor; eauto.      
+    - destruct A; try assumption; econstructor; eauto; congruence.
   Qed.
 
 End InductiveDefs.
@@ -181,7 +191,9 @@ Module StepIndexedFixpoint.
             | None => False
             end
         | TApp typ1 X typ2 =>
-            interp (set tenv X (interp tenv k typ2)) k typ1 h v 
+            interp (set tenv X (interp tenv k typ2)) k typ1 h v
+        | Tmixed  =>
+            exists t, t<>Tmixed /\ interp tenv k t h v
         end
   end.
 
@@ -225,6 +237,8 @@ Module StepIndexedFixpoint.
           exists ST2; split; eauto.
           rewrite get_set_tvar; destruct eq_tvar; congruence.
       + intuition eauto.
+      + destruct H as (t' & T1 & T2).
+        econstructor; split; eauto.
       + destruct H; split; auto.
         intros f tf Hi.
         edestruct H4 as (v' & V1 & V2); eauto.
@@ -263,6 +277,9 @@ Module StepIndexedFixpoint.
         eapply inherited_fields_parents; eauto.
     - intros; simpl; auto.
     - intros; simpl; auto.
+    - intros H.
+      destruct A; try assumption; simpl; econstructor; split; eauto;
+        try congruence.
   Qed.
   
 End StepIndexedFixpoint.
