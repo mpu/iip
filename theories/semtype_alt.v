@@ -253,20 +253,17 @@ done.
 Qed.
 
 Corollary has_fields_inherits_lookup:
-  wf_cdefs Δ ->
-  forall A B cdef name fty fields,
-  Δ !! B = Some cdef ->
-  classfields cdef !! name = Some fty ->
-  inherits A B ->
-  has_fields A fields ->
+  wf_cdefs Δ →
+  forall A B name fty fields,
+  has_field name fty B →
+  inherits A B →
+  has_fields A fields →
   fields !! name = Some fty.
 Proof.
-  move => wfΔ A B cdef name fty fields hin hfields hinherits hf.
+  move => wfΔ A B name fty fields hfields hinherits hf.
   destruct (hf name fty) as [hl hr].
   apply hl.
-  eapply (has_fields_inherits wfΔ); first done.
-  econstructor; first done.
-  done.
+  by eapply (has_fields_inherits wfΔ).
 Qed.
 
 (* interpret a class type given the tag and the
@@ -667,10 +664,9 @@ Inductive cmd_has_ty :
       cmd_has_ty lty1 thn lty2 →
       cmd_has_ty lty1 els lty2 →
       cmd_has_ty lty1 (IfC cond thn els) lty2
-  | GetTy: forall lty lhs recv t name cdef fty,
+  | GetTy: forall lty lhs recv t name fty,
       expr_has_ty lty recv (ClassT t) →
-      Δ !! t = Some cdef →
-      cdef.(classfields) !! name = Some fty →
+      has_field name fty t →
       cmd_has_ty lty (GetC lhs recv name) (<[lhs := fty]>lty)
   | SetTy: forall lty recv fld rhs fty t,
       expr_has_ty lty recv (ClassT t) →
@@ -685,6 +681,7 @@ Inductive cmd_has_ty :
         args !! f = Some arg →
         expr_has_ty lty arg fty) →
       cmd_has_ty lty (NewC lhs t args) (<[ lhs := ClassT t]>lty)
+  (* TODO: update w.r.t. proper method lookup *)
   | CallTy: forall lty1 lty2 lhs recv t name args cdef mdef,
       expr_has_ty lty1 recv (ClassT t) →
       Δ !! t = Some cdef →
@@ -1170,7 +1167,7 @@ Proof.
     iDestruct "Ht" as %[? ?].
     rewrite bi.later_sep.
     iSplitL "Hh"; first done.
-    assert (hf: fields !! name = Some fty) by (by apply (has_fields_inherits_lookup wfΔ) with t t0 cdef).
+    assert (hf: fields !! name = Some fty) by (by apply (has_fields_inherits_lookup wfΔ) with t t0).
     iDestruct ("Hv" $! name fty hf) as (w) "[%hw hi]".
     rewrite hvs in hw; injection hw; intros ->; clear hw.
     iNext. by iApply interp_local_tys_update.
