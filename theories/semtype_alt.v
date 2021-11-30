@@ -201,6 +201,35 @@ Inductive has_field (fname: string) (typ: lang_ty): tag -> Prop :=
 
 Hint Constructors has_field : core.
 
+(* Naive method lookup: methods are unique *)
+Inductive has_method (mname: string) (mdef: methodDef): tag -> Prop :=
+  | HasMethod current cdef:
+      Δ !! current = Some cdef →
+      cdef.(classmethods) !! mname = Some mdef →
+      has_method mname mdef current
+  | InheritsMethod current parent cdef:
+      Δ !! current = Some cdef →
+      cdef.(classmethods) !! mname = None →
+      cdef.(superclass) = Some parent →
+      has_method mname mdef parent →
+      has_method mname mdef current
+.
+
+Hint Constructors has_method : code.
+
+Lemma has_method_from m mdef A:
+  has_method m mdef A →
+  ∃B cdef, Δ !! B = Some cdef ∧ cdef.(classmethods) !! m = Some mdef ∧
+  inherits A B.
+Proof.
+  induction 1 as [ current cdef hΔ hm | current parent cdef hΔ hm hs h hi];
+      first by exists current, cdef.
+  destruct hi as (B & cdef' & hΔ' & hm' & hinherits). 
+  exists B, cdef'; repeat split => //.
+  econstructor; last by apply hinherits.
+  by exists cdef.
+Qed.
+
 (* A class cannot redeclare a field if it is present in
  * any of its parent definition.
  *)
@@ -210,8 +239,11 @@ Definition wf_cdef_fields cdef : Prop :=
   has_field f fty super ->
   cdef.(classfields) !! f = None.
 
-Definition wf_cdefs (prog: stringmap classDef)  : Prop :=
-  map_Forall (fun cname cdef => wf_cdef_fields cdef) prog.
+Definition wf_cdef_methods cdef : Prop :=
+  forall m mdef super,
+  cdef.(superclass) = Some super →
+  has_method m mdef super →
+  cdef.(classmethods) !! m = None.
 
 (* all fields of class cname are in the fnames set *)
 Definition has_fields (cname: tag) (fnames: stringmap lang_ty) : Prop :=
@@ -232,9 +264,45 @@ destruct (fs0 !! k) as [ ty | ] eqn:hty.
   by rewrite hty in hr1.
 Qed.
 
+Definition has_methods (cname: tag) (mdefs: stringmap methodDef) : Prop :=
+  ∀ mname mdef, has_method mname mdef cname ↔ mdefs !! mname = Some mdef.
+
 Ltac inv H := inversion H; subst; clear H.
 
-Lemma has_fields_inherits : wf_cdefs Δ -> forall A B, inherits A B ->
+Lemma has_method_fun: forall c name mdef0 mdef1,
+  has_method name mdef0 c → has_method name mdef1 c → mdef0 = mdef1.
+Proof.
+move => c name mdef0 mdef1 h; move: mdef1.
+induction h as [ current cdef hΔ hm | current parent cdef hΔ hm hs hp hi ].
+- move => mdef1 h1; inv h1.
+  + rewrite hΔ in H; injection H; intros; subst; clear hΔ H.
+    rewrite hm in H0; by injection H0.
+  + rewrite hΔ in H; injection H; intros; subst; clear hΔ H.
+    rewrite hm in H0; discriminate H0.
+- move => mdef1 h1; inv h1.
+  + rewrite hΔ in H; injection H; intros; subst; clear hΔ H.
+    rewrite hm in H0; discriminate H0.
+  + rewrite hΔ in H; injection H; intros; subst; clear hΔ H.
+    rewrite hs in H1; injection H1; intros; subst; clear hs H1.
+    by apply hi.
+Qed.
+
+Lemma has_methods_fun: forall c mdef0 mdef1,
+  has_methods c mdef0 → has_methods c mdef1 → mdef0 = mdef1.
+Proof.
+move => c mdef0 mdef1 h0 h1.
+apply map_eq => k.
+destruct (mdef0 !! k) as [ ty | ] eqn:hty.
+- destruct (h1 k ty) as [hl1 hr1].
+  rewrite hl1 //=.
+  by apply h0.
+- destruct (mdef1 !! k) as [ ty | ] eqn:hty'; last done.
+  destruct (h1 k ty) as [hl1 hr1].
+  apply h0 in hr1; last done.
+  by rewrite hty in hr1.
+Qed.
+
+Lemma has_field_inherits : map_Forall (fun _ => wf_cdef_fields) Δ -> forall A B, inherits A B ->
   forall f fty, has_field f fty B -> has_field f fty A.
 Proof.
 move => wfΔ A B h.
@@ -243,12 +311,11 @@ apply hi in hf.
 destruct hxy as (cdef & hΔ & hs).
 apply InheritsField with y cdef; move => //.
 apply wfΔ in hΔ.
-eapply hΔ; first done.
-done.
+by eapply hΔ.
 Qed.
 
 Corollary has_fields_inherits_lookup:
-  wf_cdefs Δ →
+  map_Forall (fun _ => wf_cdef_fields) Δ →
   forall A B name fty fields,
   has_field name fty B →
   inherits A B →
@@ -258,7 +325,33 @@ Proof.
   move => wfΔ A B name fty fields hfields hinherits hf.
   destruct (hf name fty) as [hl hr].
   apply hl.
-  by eapply (has_fields_inherits wfΔ).
+  by eapply (has_field_inherits wfΔ).
+Qed.
+
+Lemma has_method_inherits : map_Forall (fun _ => wf_cdef_methods) Δ -> forall A B, inherits A B ->
+  forall m mdef, has_method m mdef B -> has_method m mdef A.
+Proof.
+move => wfΔ A B h.
+induction h as [ t | x y z hxy hyz hi]; move => m mdef hf; first done.
+apply hi in hf.
+destruct hxy as (cdef & hΔ & hs).
+apply InheritsMethod with y cdef; move => //.
+apply wfΔ in hΔ.
+by eapply hΔ.
+Qed.
+
+Corollary has_methods_inherits_lookup:
+  map_Forall (fun _ => wf_cdef_methods) Δ →
+  forall A B name mdef methods,
+  has_method name mdef B →
+  inherits A B →
+  has_methods A methods →
+  methods !! name = Some mdef.
+Proof.
+  move => wfΔ A B name fty methods hmethods hinherits hf.
+  destruct (hf name fty) as [hl hr].
+  apply hl.
+  by eapply (has_method_inherits wfΔ).
 Qed.
 
 (* interpret a class type given the tag and the
@@ -563,19 +656,34 @@ Inductive cmd_has_ty :
         args !! f = Some arg →
         expr_has_ty lty arg fty) →
       cmd_has_ty lty (NewC lhs t args) (<[ lhs := ClassT t]>lty)
-  (* TODO: update w.r.t. proper method lookup *)
-  | CallTy: forall lty1 lty2 lhs recv t name args cdef mdef,
-      expr_has_ty lty1 recv (ClassT t) →
-      Δ !! t = Some cdef →
-      cdef.(classmethods) !! name = Some mdef →
+  | CallTy: forall lty lty_body lhs recv t name mdef args,
+      expr_has_ty lty recv (ClassT t) →
+      has_method name mdef t →
       dom (gset string) mdef.(methodargs) = dom _ args →
       (forall x ty arg,
-      mdef.(methodargs) !! x = Some ty →
-      args !! x = Some arg →
-      expr_has_ty lty1 arg ty) →
-      cmd_has_ty lty1 mdef.(methodbody) lty2 →
-      expr_has_ty lty2 mdef.(methodret) mdef.(methodrettype) →
-      cmd_has_ty lty1 (CallC lhs recv name args) (<[ lhs := mdef.(methodrettype)]>lty1)
+        mdef.(methodargs) !! x = Some ty →
+        args !! x = Some arg →
+        expr_has_ty lty arg ty) →
+      cmd_has_ty (<["$this" := ClassT t]>mdef.(methodargs)) mdef.(methodbody) lty_body →
+      expr_has_ty lty_body mdef.(methodret) mdef.(methodrettype) →
+      cmd_has_ty lty (CallC lhs recv name args) (<[lhs := mdef.(methodrettype)]>lty)
+.
+
+(* Definition wf_mdef_ty t mdef := *)
+(*   forall lty, *)
+(*   cmd_has_ty (<["$this" := ClassT t]>mdef.(methodargs)) mdef.(methodbody) lty /\ *)
+(*   expr_has_ty lty mdef.(methodret) mdef.(methodrettype) *)
+(* . *)
+
+(* Lemma wf_mdef_ty_inherits t mdef A B: inherits A B → *)
+(*   forall mdef, wf_mdef_ty *)
+
+Definition wf_cdefs (prog: stringmap classDef)  : Prop :=
+  map_Forall (fun cname => wf_cdef_fields) prog
+  ∧ map_Forall (fun cname => wf_cdef_methods) prog
+  (* ∧ *)
+  (* map_Forall (fun cname cdef => *)
+  (*   map_Forall (fun mname mdef => wf_mdef_ty cname mdef) cdef.(classmethods)) prog *)
 .
 
 (* Big set reduction *)
@@ -641,6 +749,42 @@ Proof.
   rewrite -> map_Forall_lookup in H.
   by rewrite lookup_omap.
 Qed.
+
+Lemma map_args_empty: forall A B (f: A → option B),
+  map_args f ∅ = Some ∅.
+Proof.
+  rewrite /map_args => A B f /=.
+  case_option_guard; first by rewrite omap_empty.
+  elim: H.
+  apply map_Forall_lookup => i x h; discriminate h.
+Qed.
+
+Lemma map_args_update: forall A B (f: A → option B) k a m n,
+  map_args f m = Some n →
+  map_args f (<[ k := a]> m) =
+  match f a with
+  | Some b => Some (<[ k := b]> n)
+  | None => None
+  end.
+Proof.
+  rewrite /map_args => A B f k a m n h/=.
+  case_option_guard; last done.
+  injection h; intros <-; clear h.
+  case_option_guard.
+  - rewrite map_Forall_lookup in H0.
+    specialize H0 with k a.
+    rewrite lookup_insert in H0.
+    destruct H0 as [ b hb ]; first by done.
+    rewrite hb.
+    f_equal.
+    by apply omap_insert_Some.
+  - destruct (f a) as [b | ] eqn:hb; last done.
+    elim: H0 => i x h.
+    rewrite lookup_insert_Some in h.
+    destruct h as [[<- <-] | [hne hin]]; first by rewrite hb.
+    rewrite map_Forall_lookup in H.
+    now apply H in hin.
+Qed.
   
 Inductive cmd_eval:
     (local_env * heap) → cmd →
@@ -676,13 +820,12 @@ Inductive cmd_eval:
       expr_eval st1.1 cond = Some (BoolV false) →
       cmd_eval st1 els st2 →
       cmd_eval st1 (IfC cond thn els) st2
-  | CallEv: forall le h h' lhs recv l t vs name args vargs cdef mdef
+  | CallEv: forall le h h' lhs recv l t vs name args vargs mdef
       run_env run_env' ret,
       expr_eval le recv = Some (LocV l) →
       map_args (expr_eval le) args = Some vargs →
       h !! l = Some (t, vs) →
-      Δ !! t = Some cdef →
-      cdef.(classmethods) !! name = Some mdef →
+      has_method name mdef t →
       <["$this" := LocV l]>vargs = run_env →
       cmd_eval (run_env, h) mdef.(methodbody) (run_env', h') →
       expr_eval run_env' mdef.(methodret) = Some ret →
@@ -779,6 +922,39 @@ Proof.
   iDestruct "H" as %[[<- <-]|[??]].
   - iExists _. rewrite lookup_insert. by iSplit.
   - rewrite lookup_insert_ne; last done. by iApply "Hi".
+Qed.
+
+Lemma interp_local_tys_list lty le targs args vargs:
+  dom stringset targs = dom stringset args →
+  map_args (expr_eval le) args = Some vargs →
+  (∀ (x : string) (ty : lang_ty) (arg : expr),
+       targs !! x = Some ty →
+       args !! x = Some arg →
+       expr_has_ty lty arg ty) →
+  interp_local_tys lty le -∗
+  interp_local_tys targs vargs.
+Proof.
+  move => hdom hargs helt.
+  iIntros "#Hle" (v ty) "%hin".
+  assert (ha: ∃ arg, args !! v = Some arg).
+  { apply elem_of_dom.
+    rewrite -hdom.
+    apply elem_of_dom.
+    now rewrite hin.
+  }
+  destruct ha as [arg harg].
+  apply helt with v ty arg in hin; last done.
+  assert (hv: ∃ varg, vargs !! v = Some varg).
+  { apply elem_of_dom.
+    apply dom_map_args in hargs.
+    rewrite hargs.
+    apply elem_of_dom.
+    now rewrite harg.
+  }
+  destruct hv as [varg hvarg].
+  iExists varg; rewrite hvarg; iSplitR; first done.
+  rewrite (map_args_lookup _ _ _ args vargs hargs v) harg /= in hvarg.
+  by iApply expr_adequacy.
 Qed.
 
 Lemma heap_models_lookup l h A vs t :
@@ -898,7 +1074,8 @@ Proof.
     + rewrite /interp_tys_next /interp_ty_next lookup_fmap.
       destruct (hfields f fty) as [h0 h1].
       rewrite h0; first by done.
-      by apply has_fields_inherits with t0.
+      apply has_field_inherits with t0 => //.
+      now apply wfΔ.
     + iSpecialize ("h" $! ℓ t vs with "[//]").
       iDestruct "h" as (iFs) "[hsh hmodels]".
       iRewrite "Hv" in "hsh".
@@ -926,34 +1103,80 @@ Proof. done. Qed.
 Lemma updN_mono n (P Q : iProp) :
   (P -∗ Q) → (|=▷^n P) -∗ (|=▷^n Q).
 Proof.
-  elim: n => [//|n HI H].
-  rewrite !updN_S.
+  elim: n => [//|n HI H /=].
   iApply bupd_mono.
   iApply bi.later_mono.
   by iApply HI.
 Qed.
 
-Lemma cmd_adequacy lty lty' st cmd st' :
+Lemma updN_intro n (P: iProp) : P -∗ (|=▷^n P).
+Proof.
+  elim: n => [// | n hi /=].
+  iIntros "p".
+  iApply bupd_intro.
+  apply bi.later_mono in hi.
+  by iApply hi.
+Qed.
+
+Lemma updN_sep n (P R: iProp) : ((|=▷^n P) ∗ (|=▷^n R)) -∗ |=▷^n (P ∗ R).
+Proof.
+  elim: n => [// | n hi /=].
+  iIntros "[H0 H1]".
+  iMod "H0".
+  iMod "H1".
+  iModIntro.
+  iNext.
+  iApply hi.
+  by iSplitL "H0".
+Qed.
+
+Lemma updN_frame_r n (P R: iProp) : (|=▷^n P) ∗ R -∗ |=▷^n P ∗ R.
+Proof.
+  elim: n => [// | n hi /=].
+  iIntros "[H HR]".
+  iMod "H"; iModIntro.
+  iNext.
+  iApply hi.
+  by iSplitL "H".
+Qed.
+
+(*
+Definition wf_st (st : local_env * heap) (lty: gmap var lang_ty) :=
+  map_Forall (fun v val =>
+  match val with
+  | LocV l => ∃ (t t0:tag) vs,
+      st.2 !! l = Some (t, vs)
+      ∧ lty !! v = Some (ClassT t0)
+      ∧ inherits t t0
+  | _ => True
+  end) st.1
+.
+ *)
+
+Lemma cmd_adequacy st cmd st' :
   wf_cdefs Δ →
+  (* wf_st st lty → *)
   cmd_eval st cmd st' →
-  cmd_has_ty lty cmd lty' →
   ∃ n,
+  forall lty lty', cmd_has_ty lty cmd lty' →
+  (* wf_st st' lty' ∧ *)
     heap_models st.2 ∗ interp_local_tys lty st.1 -∗ |=▷^n
     heap_models st'.2 ∗ interp_local_tys lty' st'.1.
 Proof.
-  move=> wfΔ E. move: lty lty'. elim: E.
-  - move => ? lty lty' hty.
-    inv hty.
-    by exists 0.
+  move=> wfΔ.
+  elim.
+  - move => ?; exists 0 => lty lty' hty.
+    by inv hty.
   - move=> le h lhs recv val hrecv /=.
-    exists 0. iIntros "[? #Hle]".
+    exists 0 => lty lty' hc; iIntros "[? #Hle]".
     rewrite updN_zero. iFrame.
-    inv H.
+    inv hc.
     iDestruct (expr_adequacy with "Hle") as "#?"; try done.
     by iApply interp_local_tys_update.
-  - move => le h lhs new t args vargs hnew hargs lty lty' hc /=.
+  - move => le h lhs new t args vargs hnew hargs /=.
+    exists 1 => lty lty' hc.
     inv hc.
-    exists 1. iIntros "[Hh #Hle]".
+    iIntros "[Hh #Hle]".
     (* we need one modality to update the
        semantic heap *)
     rewrite updN_S updN_zero.
@@ -1022,22 +1245,26 @@ Proof.
       by iDestruct (expr_adequacy a0 with "Hle") as "#Ha0".
     + rewrite lookup_insert_ne; last done.
       by iApply "Hh".
-  - move => le h hls recv name l t vs v hle hh hvs lty lty' hc.
+  - move => le h hls recv name l t vs v hle hh hvs.
+    exists 1 => lty lty' hc.
     inv hc.
-    exists 1. iIntros "[Hh #Hle]". simpl.
+    iIntros "[Hh #Hle]". simpl.
     iModIntro. (* keep the later *)
     iDestruct (expr_adequacy with "Hle") as "#He"; try done.
     iDestruct (heap_models_lookup with "Hh He") as (fields) "(Hh&Ht&Hv)"; first done.
     iDestruct "Ht" as %[? ?].
     rewrite bi.later_sep.
     iSplitL "Hh"; first done.
-    assert (hf: fields !! name = Some fty) by (by apply (has_fields_inherits_lookup wfΔ) with t t0).
+    assert (hf: fields !! name = Some fty).
+    { apply has_fields_inherits_lookup with t t0 => //.
+      by apply wfΔ.
+    }
     iDestruct ("Hv" $! name fty hf) as (w) "[%hw hi]".
     rewrite hvs in hw; injection hw; intros ->; clear hw.
     iNext. by iApply interp_local_tys_update.
-  - move => le h recv fld rhs l v t vs vs' hrecv hrhs hh -> lty lty' hcmd.
+  - move => le h recv fld rhs l v t vs vs' hrecv hrhs hh ->.
+    exists 0 => lty lty' hcmd.
     inv hcmd.
-    exists 0.
     iIntros "[Hh #Hle]".
     rewrite updN_zero /=. iSplitL; last done.
     iDestruct (expr_adequacy recv with "Hle") as "#Hrecv" => //.
@@ -1045,42 +1272,81 @@ Proof.
     iDestruct (heap_models_lookup with "Hh Hrecv") as (fields) "(Hh&Ht&?)"; first done.
     iDestruct "Ht" as %[? ?].
     by iApply (heap_models_update with "Hh").
-  - move => st1 st2 st3 fstc sndc hcfst hfst hcsnd hsnd lty lty' h.
-    inv h.
-    apply hfst in H2. apply hsnd in H4.
-    clear hfst hsnd.
-    destruct H2 as [n1 Hfst].
-    destruct H4 as [n2 Hsnd].
-    exists (n1 + n2).
+  - move => st1 st2 st3 fstc sndc hcfst hfst hcsnd hsnd.
+    destruct hfst as [n1 h1].
+    destruct hsnd as [n2 h2].
+    exists (n1 + n2) => lty lty' hc.
+    inv hc.
+    apply h1 in H2.
+    apply h2 in H4.
     iIntros "H".
-    iDestruct (Hfst with "H") as "H".
+    iDestruct (H2 with "H") as "H".
     iPoseProof (updN_mono with "H") as "H";
       first done.
     by rewrite Nat_iter_add.
-  - move => st1 st2 cond thn els hexpr hcthn hi hcels hels h.
-    inv h.
-    apply hi in H5. clear hi.
-    destruct H5 as [n Hifc]. exists n.
-    iIntros "H". iPoseProof (Hifc with "H") as "H".
-    done.
-  - move => st1 st2 cond thn els hexpr hcthn hi hcels hels h.
-    inv h.
-    apply hi in H6. clear hi.
-    destruct H6 as [n Helc]. exists n.
-    iIntros "H". iPoseProof (Helc with "H") as "H".
-    done.
-  - move => le h h' lhs recv l t vs name args vargs cdef mdef run_env
-    run_env' ret hrecv hargs hh hΔ hcdef <- hbody hi hret lty lty' hc.
+  - move => st1 st2 cond thn els hexpr hcthn hi.
+    destruct hi as [n Hifc]. exists n => lty lty' hc.
     inv hc.
-    (* t should inherits t0 *)
-    (* WIP *)
-    (* Need stuff about methods like we did properties (override, ...) *)
-    admit.
-Admitted.
+    iIntros "H".
+    by iPoseProof (Hifc with "H") as "H".
+  - move => st1 st2 cond thn els hexpr hcthn hi.
+    destruct hi as [n Helc]. exists n => lty lty' hc.
+    inv hc.
+    iIntros "H".
+    by iPoseProof (Helc with "H") as "H".
+  - move => le h h' lhs recv l t vs name args vargs mdef run_env run_env'
+    ret hrecv hargs hl hmdef <- hmbody hi hmret.
+    destruct hi as [nbody hi].
+    exists nbody => lty lty' hc.
+    inv hc; simpl in *.
+    iIntros "[Hh #Hle]".
+    iDestruct (expr_adequacy recv with "Hle") as "#Hrecv" => //.
+    iAssert (⌜inherits t t0⌝)%I as "%Hinherits".
+    { rewrite interp_type_unfold /= /interp_class.
+      iDestruct "Hrecv" as (? t1 ?) "[%hpure Hsem]".
+      destruct hpure as [[= <-] [hinherits ?]].
+      iDestruct "Hh" as (sh) "(H● & % & #Hh)".
+      iDestruct (own_valid_2 with "H● Hsem") as "#Hv".
+      rewrite gmap_view_both_validI.
+      iDestruct "Hv" as "[_ HΦ]".
+      iDestruct ("Hh" with "[//]") as (?) "[H H▷]".
+      iRewrite "H" in "HΦ".
+      rewrite option_equivI prod_equivI /=.
+      by iDestruct "HΦ" as "[-> HΦ]".
+    }
+    replace mdef0 with mdef in *; last first.
+    { eapply has_method_inherits in Hinherits; [ | by apply wfΔ | by apply H4 ].
+      by eapply has_method_fun.
+    }
+    iAssert (
+    heap_models h ∗
+     interp_local_tys (<["$this":=ClassT t0]> (methodargs mdef))
+       (<["$this":=LocV l]> vargs))%I with "[Hh]" as "H".
+    { iFrame.
+      iApply interp_local_tys_update; last done.
+      by iApply interp_local_tys_list.
+    }
+    apply hi in H9.
+    iPoseProof (H9 with "H") as "H".
+    iAssert (|=▷^nbody (
+        (heap_models h' ∗ interp_local_tys lty_body run_env') ∗
+        (interp_local_tys lty le ∗ interp_type (ClassT t0) (LocV l))
+        ))%I with "[H]" as "Hr".
+    {
+      iApply updN_frame_r.
+      iFrame.
+      by iSplit.
+    }
+    iRevert "Hr"; iApply updN_mono.
+    iIntros "[[Hh #Hlty] #[Hle Hl]]".
+    iFrame. (* Maybe too soon *)
+    iApply interp_local_tys_update; first done.
+    by iDestruct (expr_adequacy (methodret mdef) with "Hlty") as "#Hret".
+Qed.
+
+Print Assumptions cmd_adequacy.
     
 (* Thank you Robbert. TODO: update iris to get it from it *)
 Global Instance gmap_dom_ne n `{Countable K} {A : ofe}:
   Proper ((≡{n}@{gmap K A}≡) ==> (=)) (dom (gset K)).
 Proof. intros m1 m2 Hm. apply set_eq=> k. by rewrite !elem_of_dom Hm. Qed.
-
-Print Assumptions cmd_adequacy.
