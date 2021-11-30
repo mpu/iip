@@ -1109,6 +1109,19 @@ Proof.
   by iApply HI.
 Qed.
 
+Lemma updN_mono_I n (P Q : iProp) :
+  (P -∗ Q) -∗ (|=▷^n P) -∗ (|=▷^n Q).
+Proof.
+  elim: n => [|n hi]; first done.
+  iIntros "H".
+  rewrite !updN_S.
+  iIntros "HH".
+  iMod "HH".
+  iModIntro.
+  iNext.
+  by iApply (hi with "H").
+Qed.
+
 Lemma updN_intro n (P: iProp) : P -∗ (|=▷^n P).
 Proof.
   elim: n => [// | n hi /=].
@@ -1328,18 +1341,10 @@ Proof.
     }
     apply hi in H9.
     iPoseProof (H9 with "H") as "H".
-    iAssert (|=▷^nbody (
-        (heap_models h' ∗ interp_local_tys lty_body run_env') ∗
-        (interp_local_tys lty le ∗ interp_type (ClassT t0) (LocV l))
-        ))%I with "[H]" as "Hr".
-    {
-      iApply updN_frame_r.
-      iFrame.
-      by iSplit.
-    }
-    iRevert "Hr"; iApply updN_mono.
-    iIntros "[[Hh #Hlty] #[Hle Hl]]".
-    iFrame. (* Maybe too soon *)
+    iRevert "H".
+    iApply updN_mono_I.
+    iIntros "[Hh #Hlty]".
+    iFrame.
     iApply interp_local_tys_update; first done.
     by iDestruct (expr_adequacy (methodret mdef) with "Hlty") as "#Hret".
 Qed.
