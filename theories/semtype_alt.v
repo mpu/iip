@@ -597,31 +597,124 @@ Qed.
 
 Definition local_tys := stringmap lang_ty.
 
+Definition is_bool_op op : bool :=
+  match op with
+  | LeqO | GeqO | EqO => true
+  | PlusO | MinusO | TimesO | DivO => false
+  end
+.
+
 Inductive expr_has_ty (lty : local_tys) :
     expr → lang_ty → Prop :=
   | IntTy : forall z, expr_has_ty lty (IntE z) IntT
   | BoolTy: forall b, expr_has_ty lty (BoolE b) BoolT
   | NullTy: expr_has_ty lty NullE NullT
   | OpIntTy: forall op e1 e2,
-      match op with
-      | PlusO | MinusO | TimesO | DivO => True
-          | _ => False
-      end → 
+      is_bool_op op = false →
       expr_has_ty lty e1 IntT →
       expr_has_ty lty e2 IntT →
       expr_has_ty lty (OpE op e1 e2) IntT
   | OpBoolTy: forall op e1 e2,
-      match op with
-      | LeqO | GeqO | EqO => True
-      | _ => False
-      end → 
+      is_bool_op op = true →
       expr_has_ty lty e1 IntT →
       expr_has_ty lty e2 IntT →
       expr_has_ty lty (OpE op e1 e2) BoolT
   | VarTy: forall v ty,
       lty !! v = Some ty →
       expr_has_ty lty (VarE v) ty
+  | ESubTy: forall e s t,
+      expr_has_ty lty e s →
+      s <: t →
+      expr_has_ty lty e t
 .
+
+(* Inversion lemmas *)
+Lemma inv_expr_has_ty_int lty z T: expr_has_ty lty (IntE z) T → IntT <: T.
+Proof.
+assert(hgen: ∀ lty e T, expr_has_ty lty e T → ∀ z, e = IntE z → IntT <: T).
+{
+  clear lty z T.
+  move => lty e T.
+  elim => [ z | | | | | | expr A B h hi hsub ] w hw //=.
+  apply hi in hw.
+  by apply SubTrans with A.
+}
+move => h; eapply hgen; first by apply h.
+reflexivity.
+Qed.
+
+Lemma inv_expr_has_ty_bool lty b T: expr_has_ty lty (BoolE b) T → BoolT <: T.
+Proof.
+assert(hgen: ∀ lty e T, expr_has_ty lty e T → ∀ b, e = BoolE b → BoolT <: T).
+{
+  clear lty b T.
+  move => lty e T.
+  elim => [ | b | | | | | expr A B h hi hsub ] w hw //=.
+  apply hi in hw.
+  by apply SubTrans with A.
+}
+move => h; eapply hgen; first by apply h.
+reflexivity.
+Qed.
+
+Lemma inv_expr_has_ty_null lty T: expr_has_ty lty NullE T → NullT <: T.
+Proof.
+assert(hgen: ∀ lty e T, expr_has_ty lty e T → e = NullE → NullT <: T).
+{
+  clear lty  T.
+  move => lty e T.
+  elim  => [ | | | | | | expr A B h hi hsub ]  hw //=.
+  apply hi in hw.
+  by apply SubTrans with A.
+}
+move => h; eapply hgen; first by apply h.
+done.
+Qed.
+
+Lemma inv_expr_has_ty_op lty op e1 e2 T:
+  expr_has_ty lty (OpE op e1 e2) T →
+  if is_bool_op op then BoolT <: T else IntT <: T.
+Proof.
+assert(hgen: ∀ lty e T, expr_has_ty lty e T → ∀ op e1 e2, e = OpE op e1 e2 →
+  if is_bool_op op then BoolT <: T else IntT <: T
+ ).
+{
+  clear lty op e1 e2 T.
+  move => lty e T.
+  elim => [ | | | op e1 e2 hop he1 _ he2 _ | op e1 e2 hop he1 _ he2 _| |
+     expr A B h hi hsub ]
+      op' e1' e2' heq //=.
+  - injection heq; intros; subst; clear heq.
+    by rewrite /is_bool_op; destruct op'.
+  - injection heq; intros; subst; clear heq.
+    by rewrite /is_bool_op; destruct op'.
+  - apply hi in heq.
+    destruct is_bool_op; by apply SubTrans with A.
+}
+move => h; eapply hgen; first by apply h.
+reflexivity.
+Qed. 
+
+Lemma inv_expr_has_ty_var lty v T: expr_has_ty lty (VarE v) T →
+  ∃ T0, lty !! v = Some T0 ∧ T0 <: T.
+Proof.
+assert(hgen: ∀ lty e T, expr_has_ty lty e T → ∀ v, e = VarE v →
+  ∃ T0, lty !! v = Some T0 ∧ T0 <: T).
+{
+  clear lty v T.
+  move => lty e T.
+  elim => [ | | | | | v ty hin | expr A B h hi hsub ] w hw //=.
+  - injection hw; intros <-; clear hw. 
+    exists ty; by split.
+  - apply hi in hw.
+    destruct hw as (T0 & hin & hsub').
+    exists T0; split; first done.
+    by apply SubTrans with A.
+}
+move => h; eapply hgen; first by apply h.
+reflexivity.
+Qed.
+  
 
 (* continuation-based typing for commands *)
 Inductive cmd_has_ty :
@@ -656,7 +749,7 @@ Inductive cmd_has_ty :
         args !! f = Some arg →
         expr_has_ty lty arg fty) →
       cmd_has_ty lty (NewC lhs t args) (<[ lhs := ClassT t]>lty)
-  | CallTy: forall lty lty_body lhs recv t name mdef args,
+  | CallTy: forall lty (*lty_body*) lhs recv t name mdef args,
       expr_has_ty lty recv (ClassT t) →
       has_method name mdef t →
       dom (gset string) mdef.(methodargs) = dom _ args →
@@ -664,26 +757,23 @@ Inductive cmd_has_ty :
         mdef.(methodargs) !! x = Some ty →
         args !! x = Some arg →
         expr_has_ty lty arg ty) →
-      cmd_has_ty (<["$this" := ClassT t]>mdef.(methodargs)) mdef.(methodbody) lty_body →
-      expr_has_ty lty_body mdef.(methodret) mdef.(methodrettype) →
+      (* cmd_has_ty (<["$this" := ClassT t]>mdef.(methodargs)) mdef.(methodbody) lty_body → *)
+      (* expr_has_ty lty_body mdef.(methodret) mdef.(methodrettype) → *)
       cmd_has_ty lty (CallC lhs recv name args) (<[lhs := mdef.(methodrettype)]>lty)
 .
 
-(* Definition wf_mdef_ty t mdef := *)
-(*   forall lty, *)
-(*   cmd_has_ty (<["$this" := ClassT t]>mdef.(methodargs)) mdef.(methodbody) lty /\ *)
-(*   expr_has_ty lty mdef.(methodret) mdef.(methodrettype) *)
-(* . *)
-
-(* Lemma wf_mdef_ty_inherits t mdef A B: inherits A B → *)
-(*   forall mdef, wf_mdef_ty *)
+Definition wf_mdef_ty t mdef :=
+  ∃ lty,
+  cmd_has_ty (<["$this" := ClassT t]>mdef.(methodargs)) mdef.(methodbody) lty ∧
+  expr_has_ty lty mdef.(methodret) mdef.(methodrettype)
+.
 
 Definition wf_cdefs (prog: stringmap classDef)  : Prop :=
   map_Forall (fun cname => wf_cdef_fields) prog
   ∧ map_Forall (fun cname => wf_cdef_methods) prog
-  (* ∧ *)
-  (* map_Forall (fun cname cdef => *)
-  (*   map_Forall (fun mname mdef => wf_mdef_ty cname mdef) cdef.(classmethods)) prog *)
+  ∧
+  map_Forall (fun cname cdef =>
+    map_Forall (fun mname mdef => wf_mdef_ty cname mdef) cdef.(classmethods)) prog
 .
 
 (* Big set reduction *)
@@ -884,32 +974,90 @@ Proof.
      induction is necessary *)
   case: e => [z | b | | op e1 e2 | v] /=.
   - move => [= <-] hexpr.
-    inv hexpr.
-    iIntros "_"; rewrite interp_type_unfold.
+    apply inv_expr_has_ty_int in hexpr.
+    iIntros "_".
+    iApply subtype_is_inclusion; first by apply hexpr.
+    rewrite interp_type_unfold.
     by iExists _.
   - move => [= <-] hexpr.
-    inv hexpr.
-    iIntros "_"; rewrite interp_type_unfold.
+    apply inv_expr_has_ty_bool in hexpr.
+    iIntros "_".
+    iApply subtype_is_inclusion; first by apply hexpr.
+    rewrite interp_type_unfold.
     by iExists _.
   - move => [= <-] hexpr.
-    inv hexpr.
-    iIntros "_"; by rewrite interp_type_unfold.
+    apply inv_expr_has_ty_null in hexpr.
+    iIntros "_".
+    iApply subtype_is_inclusion; first by apply hexpr.
+    by rewrite interp_type_unfold.
   - destruct (expr_eval le e1) as [[z1| ? | | ?] | ] eqn:h1; move => //=.
     destruct (expr_eval le e2) as [[z2| ? | | ?] | ] eqn:h2; move => //=.
     move => [= <-] hexpr.
-    inv hexpr.
-    + iIntros "hty".
-      rewrite interp_type_unfold /= /interp_int.
-      destruct op; by eauto.
-    + iIntros "hty".
-      rewrite interp_type_unfold /= /interp_bool.
-      destruct op; by eauto.
+    apply inv_expr_has_ty_op in hexpr; iIntros "hty".
+    destruct op;
+    ( iApply subtype_is_inclusion; [by apply hexpr |
+      rewrite interp_type_unfold; by eauto]).
   - move => hle hexpr.
-    inv hexpr.
-    iIntros "#Hlty". (* CHECKPOINT *)
+    apply inv_expr_has_ty_var in hexpr.
+    destruct hexpr as (T0 & hin & hsub').
+    iIntros "#Hlty".
     iDestruct ("Hlty" with "[//]") as (?) "[% H]".
     rewrite hle in H; injection H; intros <-; clear H.
+    iApply subtype_is_inclusion; first by apply hsub'.
     done.
+Qed.
+
+Lemma expr_adequacy2 e lty le ty val :
+  expr_eval le e = Some val →
+  expr_has_ty lty e ty →
+  interp_local_tys lty le -∗
+  interp_type ty val.
+Proof.
+  move => he h; move: le val he.
+  elim: h => [z | b | | op e1 e2 hop he1 hi1 he2 hi2 |
+      op e1 e2 hop he1 hi1 he2 hi2 |
+      v vty hv | exp S T hS hi hsub ] le val he; iIntros "#Hlty".
+  - inv he; rewrite interp_type_unfold /=; by eauto.
+  - inv he; rewrite interp_type_unfold /=; by eauto.
+  - inv he; rewrite interp_type_unfold /=; by eauto.
+  - inv he.
+    case heq1 : (expr_eval le e1) => [v1 | ]; rewrite heq1 in H0; last by done.
+    apply hi1 in heq1.
+    iDestruct (heq1 with "Hlty") as "hv1".
+    rewrite interp_type_unfold /=.
+    iDestruct "hv1" as (z1) "%hz1".
+    rewrite hz1 in H0.
+    case heq2 : (expr_eval le e2) => [v2 | ]; rewrite heq2 in H0; last by done.
+    apply hi2 in heq2.
+    iDestruct (heq2 with "Hlty") as "hv2".
+    rewrite interp_type_unfold /=.
+    iDestruct "hv2" as (z2) "%hz2".
+    rewrite hz2 in H0.
+    case: H0 => <-.
+    rewrite interp_type_unfold /= /interp_int.
+    move: hop; rewrite /is_bool_op; destruct op => //= _; by iExists _.
+  - inv he.
+    case heq1 : (expr_eval le e1) => [v1 | ]; rewrite heq1 in H0; last by done.
+    apply hi1 in heq1.
+    iDestruct (heq1 with "Hlty") as "hv1".
+    rewrite interp_type_unfold /=.
+    iDestruct "hv1" as (z1) "%hz1".
+    rewrite hz1 in H0.
+    case heq2 : (expr_eval le e2) => [v2 | ]; rewrite heq2 in H0; last by done.
+    apply hi2 in heq2.
+    iDestruct (heq2 with "Hlty") as "hv2".
+    rewrite interp_type_unfold /=.
+    iDestruct "hv2" as (z2) "%hz2".
+    rewrite hz2 in H0.
+    case: H0 => <-.
+    rewrite interp_type_unfold /= /interp_bool.
+    move: hop; rewrite /is_bool_op; destruct op => //= _; by iExists _.
+  - inv he.
+    iDestruct ("Hlty" with "[//]") as (?) "[% H]".
+    rewrite H0 in H; by case: H => ->.
+  - apply hi in he.
+    iApply subtype_is_inclusion; first by apply hsub.
+    by iApply he.
 Qed.
 
 Lemma interp_local_tys_update v lty le ty val :
@@ -922,6 +1070,27 @@ Proof.
   iDestruct "H" as %[[<- <-]|[??]].
   - iExists _. rewrite lookup_insert. by iSplit.
   - rewrite lookup_insert_ne; last done. by iApply "Hi".
+Qed.
+
+Lemma interp_local_tys_update_weaken v A B lty le:
+  A <: B →
+  interp_local_tys (<[v := A]> lty) le -∗
+  interp_local_tys (<[v := B]> lty) le.
+Proof.
+  move => hAB; iIntros "H".
+  rewrite /interp_local_tys.
+  iIntros (w ty) "%Hin".
+  rewrite lookup_insert_Some in Hin.
+  destruct Hin as [[<- <-]|[hne Hin]].
+  - iSpecialize ("H" $! v A).
+    rewrite lookup_insert.
+    iDestruct ("H" with "[//]") as (val) "[%Hin #h]".
+    iExists val; iSplitR; first done.
+    by iApply subtype_is_inclusion.
+  - iSpecialize ("H" $! w ty).
+    rewrite lookup_insert_ne // Hin.
+    iDestruct ("H" with "[//]") as (val) "[%Hin' #h]".
+    iExists val; by iSplitR.
 Qed.
 
 Lemma interp_local_tys_list lty le targs args vargs:
@@ -1153,26 +1322,11 @@ Proof.
   by iSplitL "H".
 Qed.
 
-(*
-Definition wf_st (st : local_env * heap) (lty: gmap var lang_ty) :=
-  map_Forall (fun v val =>
-  match val with
-  | LocV l => ∃ (t t0:tag) vs,
-      st.2 !! l = Some (t, vs)
-      ∧ lty !! v = Some (ClassT t0)
-      ∧ inherits t t0
-  | _ => True
-  end) st.1
-.
- *)
-
 Lemma cmd_adequacy st cmd st' :
   wf_cdefs Δ →
-  (* wf_st st lty → *)
   cmd_eval st cmd st' →
   ∃ n,
   forall lty lty', cmd_has_ty lty cmd lty' →
-  (* wf_st st' lty' ∧ *)
     heap_models st.2 ∗ interp_local_tys lty st.1 -∗ |=▷^n
     heap_models st'.2 ∗ interp_local_tys lty' st'.1.
 Proof.
@@ -1328,7 +1482,7 @@ Proof.
       by iDestruct "HΦ" as "[-> HΦ]".
     }
     replace mdef0 with mdef in *; last first.
-    { eapply has_method_inherits in Hinherits; [ | by apply wfΔ | by apply H4 ].
+    { eapply has_method_inherits in Hinherits; [ | by apply wfΔ | by apply H6 ].
       by eapply has_method_fun.
     }
     iAssert (
@@ -1339,8 +1493,29 @@ Proof.
       iApply interp_local_tys_update; last done.
       by iApply interp_local_tys_list.
     }
-    apply hi in H9.
-    iPoseProof (H9 with "H") as "H".
+    assert (wfbody: ∃B, wf_mdef_ty B mdef ∧ inherits t0 B).
+    { destruct wfΔ as (? & ? & hbodies).
+      rewrite map_Forall_lookup in hbodies.
+      apply has_method_from in H6.
+      destruct H6 as (B & cdef & hB & hm & hin).
+      apply hbodies in hB.
+      rewrite map_Forall_lookup in hB.
+      apply hB in hm.
+      exists B; split; first done.
+      by eapply rtc_transitive.
+    }
+    destruct wfbody as (B & (lty' & hb & hr) & hB).
+    apply hi in hb.
+    iAssert ( heap_models h ∗
+     interp_local_tys (<["$this":=ClassT B]> (methodargs mdef))
+     (<["$this":=LocV l]> vargs))%I with "[H]" as "H".
+    { iDestruct "H" as "[H #Hsem]".
+      iFrame.
+      iApply interp_local_tys_update_weaken; last done.
+      apply SubClass.
+      by eapply rtc_transitive.
+    }
+    iPoseProof (hb with "H") as "H".
     iRevert "H".
     iApply updN_mono_I.
     iIntros "[Hh #Hlty]".
@@ -1350,8 +1525,160 @@ Proof.
 Qed.
 
 Print Assumptions cmd_adequacy.
-    
+
+Lemma updN_plus n1 (P: iProp) : forall n2,
+  (|=▷^n1 P) -∗ (|=▷^(n1 + n2) P).
+Proof.
+  elim:n1 => [ | n1 hi] /= => n2; iIntros "h1"; first by iApply updN_intro.
+  iMod "h1".
+  iModIntro.
+  iNext.
+  by iApply hi.
+Qed.
+
+
 (* Thank you Robbert. TODO: update iris to get it from it *)
 Global Instance gmap_dom_ne n `{Countable K} {A : ofe}:
   Proper ((≡{n}@{gmap K A}≡) ==> (=)) (dom (gset K)).
 Proof. intros m1 m2 Hm. apply set_eq=> k. by rewrite !elem_of_dom Hm. Qed.
+
+(*
+Alternative version by induction on the types, seems fairly similar.
+
+Lemma cmd_adequacy2 lty cmd lty' :
+  wf_cdefs Δ →
+  cmd_has_ty lty cmd lty' →
+  ∃ n,
+  forall st st', cmd_eval st cmd st' →
+    heap_models st.2 ∗ interp_local_tys lty st.1 -∗ |=▷^n
+    heap_models st'.2 ∗ interp_local_tys lty' st'.1.
+Proof.
+  move => wfΔ.
+  move : lty lty'.
+  induction 1 as [ lty | lty1 lty2 lty3 fstc sndc hfst hi1 hsnd hi2 |
+      lty lhs e ty he | lty1 lty2 cond thn els hcond hthn hi1 hels hi2 |
+      lty lhs recv t name fty hrecv hf |
+      lty recv fld rhs fty t hrecv hrhs hf |
+      lty lhs t args fields hf hdom harg |
+      lty lty_body lhs recv t name mdef args hrecv hm hdom harg
+      hbody hi hret ].
+  - exists 0 => st st' hc.
+    inv hc.
+    by rewrite updN_zero.
+  - destruct hi1 as (n1 & hn1).
+    destruct hi2 as (n2 & hn2).
+    exists (n1 + n2) => st st' hc.
+    inv hc.
+    apply hn1 in H2.
+    apply hn2 in H4.
+    iIntros "H".
+    iDestruct (H2 with "H") as "H".
+    iPoseProof (updN_mono with "H") as "H";
+      first done.
+    by rewrite Nat_iter_add.
+  - exists 0 => st st' hc.
+    inv hc.
+    iIntros "[? #Hle]".
+    rewrite updN_zero. iFrame.
+    iDestruct (expr_adequacy with "Hle") as "#?"; try done.
+    by iApply interp_local_tys_update.
+  - destruct hi1 as (n1 & hn1).
+    destruct hi2 as (n2 & hn2).
+    exists (n1 + n2) => st st' hc.
+    iIntros "H".
+    inv hc.
+    + apply hn1 in H5.
+      iApply updN_plus.
+      by iApply H5.
+    + apply hn2 in H5.
+      rewrite Nat.add_comm.
+      iApply updN_plus.
+      by iApply H5.
+  - exists 1 => st st' hc.
+    inv hc.
+    iIntros "[Hh #Hle]". simpl.
+    iModIntro. (* keep the later *)
+    iDestruct (expr_adequacy with "Hle") as "#He"; try done.
+    iDestruct (heap_models_lookup with "Hh He") as (fields) "(Hh&Ht&Hv)"; first done.
+    iDestruct "Ht" as %[? ?].
+    rewrite bi.later_sep.
+    iSplitL "Hh"; first done.
+    assert (hfield: fields !! name = Some fty).
+    { apply has_fields_inherits_lookup with t0 t => //.
+      by apply wfΔ.
+    }
+    iDestruct ("Hv" $! name fty hfield) as (w) "[%hw hi]".
+    rewrite H6 in hw; injection hw; intros ->; clear hw.
+    iNext. by iApply interp_local_tys_update.
+  - (* TODO: set *) admit.
+  - exists 1 => st st' hc.
+    inv hc; simpl.
+    iIntros "[Hh #Hle]".
+    (* we need one modality to update the
+       semantic heap *)
+    iDestruct "Hh" as (sh) "(H●&Hdom&#Hh)".
+    iDestruct "Hdom" as %Hdom.
+    iMod (own_update with "H●") as "[H● H◯]".
+    { apply (gmap_view_alloc _ new DfracDiscarded
+        (t, interp_tys_next interp_type fields)); last done.
+      apply (not_elem_of_dom (D:=gset loc)).
+      by rewrite Hdom not_elem_of_dom. }
+    iIntros "!> !>". iDestruct "H◯" as "#H◯".
+    iAssert (interp_type (ClassT t) (LocV new))
+      with "[]" as "#Hl".
+    { rewrite interp_type_unfold /=.
+      iExists _, _, _. by iSplit. }
+    iSplitL; last first.
+    by iApply interp_local_tys_update.
+    iExists _. iFrame. iSplit.
+    by rewrite !dom_insert_L Hdom.
+    iModIntro. iIntros (???) "Hlook".
+    rewrite lookup_insert_Some.
+    iDestruct "Hlook" as %[[<- [= <- <-]]|[Hℓ Hlook]].
+    + iExists _. rewrite lookup_insert.
+      iSplitR; first done.
+      rewrite /heap_models_fields.
+      iSplitR.
+      { 
+        apply dom_map_args in H5.
+        by rewrite dom_interp_tys_next H5 -hdom.
+      }
+      iIntros (f iF) "hiF".
+      iAssert (⌜f ∈ dom stringset fields⌝)%I as "%hfield".
+      {
+        rewrite -dom_interp_tys_next elem_of_dom.
+        rewrite /interp_tys_next /interp_ty_next.
+        rewrite !lookup_fmap.
+        by iRewrite "hiF".
+      }
+      assert (h0: is_Some (args !! f)).
+      {
+        apply elem_of_dom.
+        by rewrite -hdom.
+      }
+      destruct h0 as [a0 ha0].
+      assert (h1: is_Some (vargs !! f)).
+      {
+        apply elem_of_dom.
+        apply dom_map_args in H5.
+        by rewrite H5 -hdom.
+      }
+      destruct h1 as [v0 hv0].
+      assert (h2: is_Some (fields !! f)) by (by apply elem_of_dom).
+      destruct h2 as [fty hty].
+      iExists v0; iSplitR; first done.
+      rewrite /interp_tys_next /interp_ty_next lookup_fmap.
+      assert (heval0: expr_eval le a0 = Some v0).
+      { rewrite (map_args_lookup _ _ _ args vargs H5 f) in hv0.
+        by rewrite ha0 in hv0.
+      }
+      assert (hty0: expr_has_ty lty a0 fty) by (by apply harg with f).
+      rewrite hty /= option_equivI later_equivI.
+      iNext.
+      rewrite discrete_fun_equivI.
+      iSpecialize ("hiF" $! v0).
+      iRewrite -"hiF".
+      by iDestruct (expr_adequacy a0 with "Hle") as "#Ha0".
+    + rewrite lookup_insert_ne; last done.
+      by iApply "Hh".
+*)
