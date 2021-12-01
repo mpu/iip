@@ -143,6 +143,7 @@ Definition interp_nonnull : interp :=
 
 Definition interp_mixed : interp :=
  λ (v: value), (interp_nonnull v ∨ interp_null v)%I.
+
 (* I need these two intermediate definition to make Coq/Type Classes instaces
  * happy.
  *)
@@ -749,7 +750,7 @@ Inductive cmd_has_ty :
         args !! f = Some arg →
         expr_has_ty lty arg fty) →
       cmd_has_ty lty (NewC lhs t args) (<[ lhs := ClassT t]>lty)
-  | CallTy: forall lty (*lty_body*) lhs recv t name mdef args,
+  | CallTy: forall lty lhs recv t name mdef args,
       expr_has_ty lty recv (ClassT t) →
       has_method name mdef t →
       dom (gset string) mdef.(methodargs) = dom _ args →
@@ -757,8 +758,6 @@ Inductive cmd_has_ty :
         mdef.(methodargs) !! x = Some ty →
         args !! x = Some arg →
         expr_has_ty lty arg ty) →
-      (* cmd_has_ty (<["$this" := ClassT t]>mdef.(methodargs)) mdef.(methodbody) lty_body → *)
-      (* expr_has_ty lty_body mdef.(methodret) mdef.(methodrettype) → *)
       cmd_has_ty lty (CallC lhs recv name args) (<[lhs := mdef.(methodrettype)]>lty)
 .
 
@@ -1072,25 +1071,35 @@ Proof.
   - rewrite lookup_insert_ne; last done. by iApply "Hi".
 Qed.
 
+Lemma interp_local_tys_weaken_ty v A B lty le:
+  lty !! v = Some A →
+  A <: B →
+  interp_local_tys lty le -∗
+  interp_local_tys (<[v := B]> lty) le.
+Proof.
+  move => hin hAB; iIntros "H".
+  rewrite /interp_local_tys.
+  iIntros (w ty) "%Hin".
+  rewrite lookup_insert_Some in Hin.
+  destruct Hin as [[<- <-]|[hne Hin]].
+  - iSpecialize ("H" $! v A).
+    iDestruct ("H" with "[//]") as (val) "[%Hin #h]".
+    iExists val; iSplitR; first done.
+    by iApply subtype_is_inclusion.
+  - iSpecialize ("H" $! w ty).
+    iDestruct ("H" with "[//]") as (val) "[%Hin' #h]".
+    iExists val; by iSplitR.
+Qed.
+
 Lemma interp_local_tys_update_weaken v A B lty le:
   A <: B →
   interp_local_tys (<[v := A]> lty) le -∗
   interp_local_tys (<[v := B]> lty) le.
 Proof.
   move => hAB; iIntros "H".
-  rewrite /interp_local_tys.
-  iIntros (w ty) "%Hin".
-  rewrite lookup_insert_Some in Hin.
-  destruct Hin as [[<- <-]|[hne Hin]].
-  - iSpecialize ("H" $! v A).
-    rewrite lookup_insert.
-    iDestruct ("H" with "[//]") as (val) "[%Hin #h]".
-    iExists val; iSplitR; first done.
-    by iApply subtype_is_inclusion.
-  - iSpecialize ("H" $! w ty).
-    rewrite lookup_insert_ne // Hin.
-    iDestruct ("H" with "[//]") as (val) "[%Hin' #h]".
-    iExists val; by iSplitR.
+  replace (<[v:=B]>lty) with (<[v:=B]> (<[v:=A]> lty)); last by rewrite insert_insert.
+  iApply interp_local_tys_weaken_ty; try done.
+  by rewrite lookup_insert.
 Qed.
 
 Lemma interp_local_tys_list lty le targs args vargs:
