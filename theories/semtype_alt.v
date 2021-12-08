@@ -74,6 +74,8 @@ Inductive cmd : Set :=
   | NewC (lhs: var) (class_name: tag) (args: stringmap expr)
   | GetC (lhs: var) (recv: expr) (name: string)
   | SetC (recv: expr) (fld: string) (rhs: expr)
+      (* tag test "if ($v is C) { ... }" *)
+  | CondTagC (v : var) (t : tag) (body : cmd)
 .
 
 Record methodDef := {
@@ -373,15 +375,6 @@ Notation sem_heap_mapsto ℓ t iFs :=
 Notation ty_interpO := (lang_ty -d> interpO).
 
 
-Definition interp_nonnull : interp :=
-  λ (v : value),
-     ((∃ z, ⌜v = IntV z⌝) ∨
-     (∃ b, ⌜v = BoolV b⌝) ∨
-     (∃ ℓ t iFs, ⌜v = LocV ℓ⌝ ∗  sem_heap_mapsto ℓ t iFs))%I.
-
-Definition interp_mixed : interp :=
- λ (v: value), (interp_nonnull v ∨ interp_null v)%I.
-
 (* I need these two intermediate definition to make Coq/Type Classes instaces
  * happy.
  *)
@@ -401,6 +394,15 @@ Definition interp_class (cname : tag) (rec : ty_interpO) : interp :=
     ⌜w = LocV ℓ ∧ inherits t cname ∧ has_fields t fields⌝ ∗
     sem_heap_mapsto ℓ t (interp_tys_next rec fields))%I.
 
+Definition interp_nonnull (rec : ty_interpO) : interp :=
+  λ (v : value),
+     ((interp_int v) ∨
+     (interp_bool v) ∨
+     (∃ t, interp_class t rec v))%I.
+
+Definition interp_mixed (rec: ty_interpO) : interp :=
+ λ (v: value), (interp_nonnull rec v ∨ interp_null v)%I.
+
 (* we use a blend of Coq/Iris recursion, the
    Coq recursion lets us handle simple structural
    cases, and we use Iris' recursion to deal with
@@ -412,10 +414,10 @@ Definition interp_type_pre (rec : ty_interpO) : ty_interpO :=
        | IntT => interp_int
        | BoolT => interp_bool
        | NothingT => interp_nothing
-       | MixedT => interp_mixed
+       | MixedT => interp_mixed rec
        | ClassT t => interp_class t rec
        | NullT => interp_null
-       | NonNullT => interp_nonnull
+       | NonNullT => interp_nonnull rec
        | UnionT A B => interp_union (go A) (go B)
        | InterT A B => interp_inter (go A) (go B)
        end) typ.
@@ -443,19 +445,46 @@ Proof.
 move => n i1 i2 hdist.
 move => ty.
 elim : ty; intros => //=;
-    [ (* ClassT *)
+    [ (* mixed *)| (*class*) | (*nonnull*) 
     | solve_proper_core ltac:(fun _ => first [done | f_contractive | f_equiv])
     | solve_proper_core ltac:(fun _ => first [done | f_contractive | f_equiv])
     ].
-{
-move => v; rewrite /interp_class.
-do 3 (f_equiv; intro).
-do 4 f_equiv.
-rewrite /interp_tys_next /interp_ty_next.
-apply gmap_fmap_ne_ext => k ty hin.
-f_contractive.
-by destruct n.
-}
+    (* TODO: factor out interp class and interp nonnull *)
+- move => v; rewrite /interp_mixed.
+  f_equiv.
+  rewrite /interp_nonnull.
+  f_equiv.
+  f_equiv.
+  f_equiv.
+  f_equiv.
+  (* interp class *)
+  rewrite /interp_class.
+  do 3 (f_equiv; intro).
+  do 4 f_equiv.
+  rewrite /interp_tys_next /interp_ty_next.
+  apply gmap_fmap_ne_ext => k ty hin.
+  f_contractive.
+  by destruct n.
+- move => v; rewrite /interp_class.
+  do 3 (f_equiv; intro).
+  do 4 f_equiv.
+  rewrite /interp_tys_next /interp_ty_next.
+  apply gmap_fmap_ne_ext => k ty hin.
+  f_contractive.
+  by destruct n.
+- move => v; rewrite /interp_nonnull.
+  f_equiv.
+  f_equiv.
+  f_equiv.
+  f_equiv.
+  (* interp class *)
+  rewrite /interp_class.
+  do 3 (f_equiv; intro).
+  do 4 f_equiv.
+  rewrite /interp_tys_next /interp_ty_next.
+  apply gmap_fmap_ne_ext => k ty hin.
+  f_contractive.
+  by destruct n.
 Qed.
 
 (* the interpretation of types can now be
@@ -480,22 +509,6 @@ Proof.
   - rewrite /interp_union.
     by apply bi.and_persistent; rewrite -!interp_type_unfold.
 Qed.
-
-(*
-(* that is a bit of an awkward lemma;
-   I am not yet sure it "scales" *)
-Lemma interp_type_loc_inversion ty ℓ :
-  interp_type ty (LocV ℓ) -∗
-  ∃ t, interp_type (ClassT t) (LocV ℓ).
-Proof.
-  rewrite interp_type_unfold. elim: ty => /=.
-  - iIntros "%". naive_solver.
-  - move=>? IH1 ? IH2. iIntros "[H|H]".
-    by iApply IH1. by iApply IH2.
-  - move=> t. iIntros "H". iExists t.
-    by rewrite interp_type_unfold /=.
-Qed.
- *)
 
 Lemma dom_interp_tys_next fields:
   dom stringset (interp_tys_next interp_type fields) ≡ dom _ fields.
@@ -548,7 +561,7 @@ induction 1 as [A | A B hext | | | | A | A B| A B | A B C h0 hi0 h1 hi1
     iLeft.
     iRight.
     iRight.
-    by iExists _, _, _; iFrame.
+    by iExists t, _, _, _; iFrame.
   + move => v; iIntros "h"; by iRight.
   + move => v; by iIntros "h"; iLeft.
   + move => s hs t ht v.
@@ -578,7 +591,7 @@ induction 1 as [A | A B hext | | | | A | A B| A B | A B C h0 hi0 h1 hi1
   iIntros "h"; iRight; iRight.
   iDestruct "h" as (ℓ t fields) "[%h0 h1]".
   destruct h0 as [-> [hext hfields]].
-  by iExists _, _, _; iFrame.
+  by iExists t, _, _, _; iFrame.
 - rewrite /interp_union.
   by iIntros "h"; iLeft.
 - rewrite /interp_union.
@@ -608,6 +621,17 @@ Proof.
   move => A B hAB v.
   rewrite !interp_type_unfold.
   by iApply subtype_is_inclusion_aux.
+Qed.
+
+Corollary inherits_is_inclusion:
+  forall A B, inherits A B →
+  forall v,
+  interp_class A interp_type v -∗ interp_class B interp_type v.
+Proof.
+  move => A B hAB v; iIntros "h".
+  iDestruct (subtype_is_inclusion (ClassT A) (ClassT B)) as "H"; first by eauto.
+  rewrite !interp_type_unfold /=.
+  by iApply "H".
 Qed.
 
 (* language statics & semantics *)
@@ -694,6 +718,10 @@ Inductive cmd_has_ty :
       (forall k A B, rty' !! k = Some A → rty !! k = Some B →  A <: B) →
       cmd_has_ty lty c rty' →
       cmd_has_ty lty c rty
+  | CondTagTy lty v tv t cmd :
+      lty !! v = Some tv →
+      cmd_has_ty (<[v:=InterT tv (ClassT t)]> lty) cmd lty →
+      cmd_has_ty lty (CondTagC v t cmd) lty
 .
 
 Corollary CallTy_: forall lty lhs recv t name mdef args,
@@ -852,6 +880,12 @@ Proof.
     now apply H in hin.
 Qed.
   
+Definition tag_match (st : local_env * heap) (v: string) (t: tag) :=
+  ∃ l, st.1 !! v = Some (LocV l) ∧
+  ∃ t' (fields: stringmap value), st.2 !! l = Some (t', fields) ∧
+  inherits t' t
+.
+
 Inductive cmd_eval:
     (local_env * heap) → cmd →
     (local_env * heap) → nat → Prop :=
@@ -896,6 +930,14 @@ Inductive cmd_eval:
       cmd_eval (run_env, h) mdef.(methodbody) (run_env', h') n →
       expr_eval run_env' mdef.(methodret) = Some ret →
       cmd_eval (le, h) (CallC lhs recv name args) (<[lhs := ret]>le, h') (S n)
+  | CondTag1Ev n st1 st2 v t cmd :
+      (* tag in heap must <: requested tag to move forward *)
+      tag_match st1 v t →
+      cmd_eval st1 cmd st2 n →
+      cmd_eval st1 (CondTagC v t cmd) st2 n
+  | CondTag2Ev n st v t cmd :
+      ¬tag_match st v t →
+      cmd_eval st (CondTagC v t cmd) st n
 .
 
 (* heap models relation; the semantic heap does
@@ -1118,6 +1160,31 @@ Proof.
   by iRewrite -"HΦ".
 Qed.
 
+Lemma heap_models_class l h A vs t :
+  h !! l = Some (t, vs) →
+  heap_models h -∗
+  interp_type (ClassT A) (LocV l) -∗
+  heap_models h ∗ interp_type (ClassT t) (LocV l).
+Proof.
+  move => hheap.
+  iIntros "hmodels hl".
+  rewrite !interp_type_unfold /= /interp_class.
+  iDestruct "hl" as (???) "[%H #H◯]".
+  destruct H as [[= <-] [hinherits hf]].
+  iDestruct "hmodels" as (sh) "(H● & % & #Hh)".
+  iDestruct (own_valid_2 with "H● H◯") as "#Hv".
+  rewrite gmap_view_both_validI.
+  iDestruct "Hv" as "[_ HΦ]".
+  iDestruct ("Hh" with "[//]") as (?) "[H H▷]".
+  iRewrite "H" in "HΦ".
+  rewrite option_equivI prod_equivI /=.
+  iDestruct "HΦ" as "[-> HΦ]".
+  fold_leibniz; rewrite H0.
+  iSplitL.
+  { iExists _; iFrame; by iSplit. }
+  iExists l, t0, fields; by iSplitR.
+Qed.
+
 Lemma heap_models_fields_update iFs vs f v (Φ : interpO)
   `{∀ v, Persistent (Φ v)} :
   iFs !! f = Some (Next Φ) ->
@@ -1280,6 +1347,63 @@ Proof.
   by iApply hi.
 Qed.
 
+
+Lemma interp_type_loc_inversion h le lty (v: string) l T t fields:
+    h !! l = Some (t, fields) →
+    le !! v = Some (LocV l) →
+    interp_local_tys lty le -∗
+    heap_models h -∗
+    interp_type T (LocV l) -∗
+    heap_models h ∗ interp_type (ClassT t) (LocV l).
+Proof.
+  rewrite interp_type_unfold => hl hv;  elim: T v hv => /=.
+  - move => ??; iIntros "? ? H".
+    iDestruct "H" as (z) "%H"; discriminate.
+  - move => ??; iIntros "? ? H".
+    iDestruct "H" as (b) "%H"; discriminate.
+  - move => ??; iIntros "? ? H".
+    iDestruct "H" as "%H"; by elim H.
+  - move => v hv; iIntros "#Hs Hh H".
+    iDestruct "H" as "[H | H]"; last first.
+    { iDestruct "H" as "%H"; discriminate. }
+    (* start of nonnull as part of mixed. TODO: factor outTODO: factor out class/nonnull *)
+    iDestruct "H" as "[H | H]".
+    { iDestruct "H" as (z) "%H"; discriminate. }
+    iDestruct "H" as "[H | H]".
+    { iDestruct "H" as (b) "%H"; discriminate. }
+    iDestruct "H" as (cname) "H".
+    iDestruct ((heap_models_class _ _ cname _ _ hl) with "[Hh //]") as "Hv".
+    iApply "Hv".
+    by rewrite interp_type_unfold.
+  - move => cname v hv; iIntros "Hs Hh H".
+    iDestruct ((heap_models_class _ _ cname _ _ hl) with "[Hh //]") as "Hv".
+    iApply "Hv".
+    by rewrite interp_type_unfold.
+  - move => ??; iIntros "? ? H".
+    iDestruct "H" as "%H"; discriminate.
+  - move => v hv; iIntros "#Hs Hh H".
+    iDestruct "H" as "[H | H]".
+    { iDestruct "H" as (z) "%H"; discriminate. }
+    iDestruct "H" as "[H | H]".
+    { iDestruct "H" as (b) "%H"; discriminate. }
+    iDestruct "H" as (cname) "H".
+    iDestruct ((heap_models_class _ _ cname _ _ hl) with "[Hh //]") as "Hv".
+    iApply "Hv".
+    by rewrite interp_type_unfold.
+  - move => S hS T hT v hv; iIntros "#Hs Hh H".
+    iDestruct "H" as "[H | H]".
+    + apply hS in hv.
+      by iApply (hv with "Hs Hh H").
+    + apply hT in hv.
+      by iApply (hv with "Hs Hh H").
+  - move => S hS T hT v hv; iIntros "#Hs Hh H".
+    rewrite /interp_inter -!interp_type_unfold.
+    iDestruct "H" as "[HS HT]".
+    apply hS in hv.
+    rewrite -!interp_type_unfold in hv.
+    by iApply (hv with "Hs Hh HS").
+Qed.
+
 Lemma cmd_adequacy_ lty cmd lty' :
   wf_cdefs Δ →
   ⌜cmd_has_ty lty cmd lty'⌝ -∗
@@ -1298,7 +1422,9 @@ Proof.
       lty lhs t args fields hf hdom harg |
       lty lhs recv t name mdef args hrecv hm hdom |
       lty c rty' rty hsubset h hi |
-		  lty c rty' rty hdom hsub h hi  ] => st st' n hc.
+		  lty c rty' rty hdom hsub h hi |
+      lty v tv t cmd hv h hi
+      ] => st st' n hc.
   - inv hc.
     rewrite updN_zero.
     by iIntros "?".
@@ -1543,6 +1669,33 @@ Proof.
     iDestruct "Hlty" as (val) "[%heq hinterp]".
     iExists val; rewrite heq; iSplitR; first done.
     by iApply subtype_is_inclusion.
+  - inv hc.
+    + apply hi in H6; clear hi.
+      iAssert (
+     heap_models st.2 ∗
+     interp_local_tys (<[v:=InterT tv (ClassT t)]> lty) st.1 -∗
+     |=▷^n heap_models st'.2 ∗ interp_local_tys lty st'.1
+      )%I as "HC"; first by apply H6.
+      iClear "IH".
+      clear H6.
+      destruct H5 as (l & hl & t' & fields & hlt & hinherits).
+      iIntros "[H #Hle]".
+      iApply "HC"; iClear "HC".
+      iDestruct ("Hle" $! v with "[//]") as (?) "[%Hlev Hv]".
+      rewrite Hlev in hl; simplify_eq.
+      iAssert(heap_models st.2 ∗ interp_type (ClassT t') (LocV l))%I with "[H]" as "[H #Hinv]";
+        first by (iApply (interp_type_loc_inversion with "Hle H Hv")).
+      iFrame.
+      iIntros (w tw).
+      rewrite lookup_insert_Some.
+      iIntros "%Hw".
+      destruct Hw as [[<- <-] | [hne hw]].
+      { iExists (LocV l); rewrite Hlev; iSplitR; first done.
+        rewrite !interp_type_unfold /= /interp_inter; iSplit; first done.
+        by iApply inherits_is_inclusion.
+      }
+      by iApply "Hle".
+    + by iApply updN_intro.
 Qed.
 
 Lemma cmd_adequacy lty cmd lty' :
